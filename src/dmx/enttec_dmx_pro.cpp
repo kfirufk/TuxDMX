@@ -408,6 +408,7 @@ bool EnttecDmxPro::discoverAndConnect() {
       status_.firmwareMajor = fwMajor;
       status_.firmwareMinor = fwMinor;
       status_.lastError.clear();
+      consecutiveWriteFailures_ = 0;
       return true;
     }
 
@@ -443,9 +444,12 @@ void EnttecDmxPro::disconnect() {
   status_.serial.clear();
   status_.firmwareMajor = 0;
   status_.firmwareMinor = 0;
+  consecutiveWriteFailures_ = 0;
 }
 
 bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
+  static constexpr int kDisconnectAfterConsecutiveWriteFailures = 4;
+
   std::scoped_lock lock(mutex_);
   if (!status_.connected) {
     return false;
@@ -463,8 +467,17 @@ bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
   frame[517] = kEndByte;
 
   if (!writeBytes(frame.data(), frame.size())) {
+    ++consecutiveWriteFailures_;
+    if (consecutiveWriteFailures_ < kDisconnectAfterConsecutiveWriteFailures) {
+      status_.lastError =
+          "DMX write failed (" + std::to_string(consecutiveWriteFailures_) + "/" +
+          std::to_string(kDisconnectAfterConsecutiveWriteFailures) + "), retrying";
+      return false;
+    }
+
     status_.connected = false;
-    status_.lastError = "DMX write failed, device disconnected";
+    status_.lastError =
+        "DMX write failed repeatedly (" + std::to_string(consecutiveWriteFailures_) + " tries), reconnecting";
 #ifdef _WIN32
     if (handle_ != nullptr) {
       CloseHandle(static_cast<HANDLE>(handle_));
@@ -476,9 +489,11 @@ bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
       fd_ = -1;
     }
 #endif
+    consecutiveWriteFailures_ = 0;
     return false;
   }
 
+  consecutiveWriteFailures_ = 0;
   return true;
 }
 

@@ -33,6 +33,7 @@ class EnttecDmxPro {
 
   mutable std::mutex mutex_;
   DmxDeviceStatus status_;
+  int consecutiveWriteFailures_ = 0;
 
 #ifdef _WIN32
   void* handle_ = nullptr;
