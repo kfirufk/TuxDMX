@@ -40,6 +40,7 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
   - clean view menu (Live / Patch / Templates / Groups / Learn)
   - auto-refresh-safe form selections (pending choices are preserved until applied)
   - auto-refresh pauses while editing form fields (resumes automatically after short idle)
+  - safe shutdown blackout: Ctrl+C writes zero values to fixtures and DMX output to prevent restart motion
 - Audio input routing UI:
   - lists available input devices
   - shows default/selected/active input

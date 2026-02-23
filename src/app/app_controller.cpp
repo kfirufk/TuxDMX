@@ -398,6 +398,7 @@ bool AppController::initialize(std::string& error) {
 
 void AppController::shutdown() {
   audio_.stop();
+  persistBlackoutToDatabase();
   dmx_.stop();
 }
 
@@ -632,6 +633,29 @@ void AppController::rebuildAllUniversesFromDatabase() {
     }
 
     dmx_.replaceUniverse(universe, frame);
+  }
+}
+
+void AppController::persistBlackoutToDatabase() {
+  std::string error;
+  const auto fixtures = db_.listFixtures(error);
+  if (!error.empty()) {
+    return;
+  }
+
+  for (const auto& fixture : fixtures) {
+    for (int channelIndex = 1; channelIndex <= fixture.channelCount; ++channelIndex) {
+      if (auto it = fixture.channelValues.find(channelIndex); it != fixture.channelValues.end() && it->second == 0) {
+        continue;
+      }
+
+      ChannelPatch patch;
+      std::string patchError;
+      if (!db_.updateFixtureChannelValue(fixture.id, channelIndex, 0, patch, patchError)) {
+        continue;
+      }
+      dmx_.setChannel(patch.universe, patch.absoluteAddress, 0);
+    }
   }
 }
 

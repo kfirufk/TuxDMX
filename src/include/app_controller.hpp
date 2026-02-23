@@ -36,6 +36,7 @@ class AppController {
   std::string buildStateJson();
 
   void rebuildAllUniversesFromDatabase();
+  void persistBlackoutToDatabase();
   void onAudioMetrics(const AudioMetrics& metrics);
 
   struct FixtureResolvedView {

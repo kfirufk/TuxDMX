@@ -40,6 +40,16 @@ void DmxEngine::stop() {
     worker_.join();
   }
 
+  // DMX USB Pro can keep transmitting its last universe after the host app exits.
+  // Write explicit blackout frames so fixtures do not remain in active/macro states.
+  const auto blackout = makeZeroUniverse();
+  for (int i = 0; i < 3; ++i) {
+    if (!device_.sendUniverse(blackout)) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(12));
+  }
+
   device_.disconnect();
 }
 
