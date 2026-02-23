@@ -26,6 +26,12 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
   - fixture cards with per-channel sliders (default)
   - optional knob mode toggle in toolbar
   - MIDI learn/clear per live control node (fixture channels and group controls)
+  - performance hold buttons with smooth attack/release:
+    - all-on lift
+    - blackout
+    - rotate for pan/tilt fixtures
+    - strobe hit
+  - adjustable fade seconds (decimal support) with MIDI mapping
   - value-range chips
   - icon mapping for channel types and mode/range labels
   - fast blank-channel generator for unknown fixtures (manual missing workflow)
@@ -122,6 +128,7 @@ ctest --preset test-debug
 - `POST /api/fixtures/{id}/channels/{channel}` set channel value
 - `POST /api/dmx/output-universe` set active output universe
 - `POST /api/dmx/universes` create/ensure a universe exists
+- `POST /api/dmx/patches` apply temporary direct DMX patches (`universe:address:value,...`)
 - `POST /api/audio/reactive` toggle music-reactive mode
 - `POST /api/audio/input-device` select active audio input device (`-1` = default)
 - `POST /api/groups` create group

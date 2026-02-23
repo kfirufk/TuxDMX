@@ -99,6 +99,45 @@
           <h2>Live Control</h2>
           <p>Play channels live while music reactive mode runs. Use Sliders/Knobs toggle in the toolbar.</p>
         </div>
+        <section class="performance-panel" id="performance-panel">
+          <article class="performance-card">
+            <h3>Transition Time</h3>
+            <p>Attack and release seconds for all hold actions. Supports decimals like 0.52.</p>
+            <label>
+              Fade Seconds
+              <input id="performance-fade-seconds" type="number" min="0.01" max="10" step="0.01" value="1.00">
+            </label>
+            <div id="performance-fade-midi-slot"></div>
+          </article>
+
+          <article class="performance-card">
+            <h3>Global Lift</h3>
+            <p>Hold to push dimmer + RGBW channels toward full output. Release to return.</p>
+            <button id="performance-all-on-btn" class="btn primary perf-hold-btn" type="button">Hold: All On</button>
+            <div id="performance-all-on-midi-slot"></div>
+          </article>
+
+          <article class="performance-card">
+            <h3>Blackout Hold</h3>
+            <p>Hold to fade all dimmer + RGBW channels down to black. Release to restore.</p>
+            <button id="performance-blackout-btn" class="btn danger perf-hold-btn" type="button">Hold: Blackout</button>
+            <div id="performance-blackout-midi-slot"></div>
+          </article>
+
+          <article class="performance-card">
+            <h3>Rotate Move</h3>
+            <p>Hold to animate pan/tilt fixtures. Pan speed channels fade in/out with the move.</p>
+            <button id="performance-rotate-btn" class="btn ghost perf-hold-btn" type="button">Hold: Rotate</button>
+            <div id="performance-rotate-midi-slot"></div>
+          </article>
+
+          <article class="performance-card">
+            <h3>Strobe Hit</h3>
+            <p>Cool extra: hold to bring strobe channels in, release for smooth return.</p>
+            <button id="performance-strobe-btn" class="btn ghost perf-hold-btn" type="button">Hold: Strobe Hit</button>
+            <div id="performance-strobe-midi-slot"></div>
+          </article>
+        </section>
         <div id="fixture-board" class="fixture-board"></div>
       </section>
     </section>

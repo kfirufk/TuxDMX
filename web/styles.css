@@ -283,6 +283,46 @@ body {
   display: block;
 }
 
+.performance-panel {
+  margin-bottom: 1rem;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.performance-card {
+  border: 1px solid rgba(199, 221, 212, 1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 0.62rem;
+  display: grid;
+  gap: 0.46rem;
+  align-content: start;
+}
+
+.performance-card h3 {
+  margin: 0;
+  font-size: 0.88rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
+.performance-card p {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--ink-soft);
+}
+
+.perf-hold-btn {
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.perf-hold-btn.is-active {
+  box-shadow: 0 0 0 2px rgba(14, 147, 132, 0.32) inset;
+}
+
 .panel {
   border-radius: var(--radius-lg);
   padding: 1rem;

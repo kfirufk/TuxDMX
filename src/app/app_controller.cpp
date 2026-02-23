@@ -87,6 +87,54 @@ std::vector<int> parseCsvInts(std::string_view csv) {
   return values;
 }
 
+struct DmxDirectPatch {
+  int universe = 1;
+  int address = 1;
+  int value = 0;
+};
+
+std::vector<DmxDirectPatch> parseDmxPatchTriples(std::string_view csv) {
+  std::vector<DmxDirectPatch> patches;
+
+  std::size_t start = 0;
+  while (start <= csv.size()) {
+    auto comma = csv.find(',', start);
+    if (comma == std::string_view::npos) {
+      comma = csv.size();
+    }
+
+    const auto token = trim(csv.substr(start, comma - start));
+    if (!token.empty()) {
+      const auto firstColon = token.find(':');
+      const auto secondColon = firstColon == std::string_view::npos ? std::string_view::npos : token.find(':', firstColon + 1);
+
+      if (firstColon != std::string_view::npos && secondColon != std::string_view::npos) {
+        const auto universeToken = trim(token.substr(0, firstColon));
+        const auto addressToken = trim(token.substr(firstColon + 1, secondColon - firstColon - 1));
+        const auto valueToken = trim(token.substr(secondColon + 1));
+
+        int universe = 0;
+        int address = 0;
+        int value = 0;
+        if (parseInt(universeToken, universe) && parseInt(addressToken, address) && parseInt(valueToken, value)) {
+          DmxDirectPatch patch;
+          patch.universe = universe;
+          patch.address = address;
+          patch.value = value;
+          patches.push_back(patch);
+        }
+      }
+    }
+
+    if (comma == csv.size()) {
+      break;
+    }
+    start = comma + 1;
+  }
+
+  return patches;
+}
+
 std::array<int, 3> hsvToRgb(float hueDeg, float saturation, float value) {
   const float h = std::fmod(std::max(hueDeg, 0.0F), 360.0F) / 60.0F;
   const float c = value * saturation;
@@ -1358,6 +1406,33 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
 
     std::ostringstream ss;
     ss << "{\"ok\":true,\"updated\":" << updated << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/dmx/patches") {
+    auto form = parseFormEncoded(request.body);
+    auto patchesIt = form.find("patches");
+    if (patchesIt == form.end() || trim(patchesIt->second).empty()) {
+      return jsonError(422, "patches is required");
+    }
+
+    const auto patches = parseDmxPatchTriples(patchesIt->second);
+    if (patches.empty()) {
+      return jsonError(422, "No valid DMX patches provided");
+    }
+
+    int applied = 0;
+    for (const auto& patch : patches) {
+      if (patch.universe < 1 || patch.address < 1 || patch.address > 512) {
+        continue;
+      }
+
+      dmx_.setChannel(patch.universe, patch.address, patch.value);
+      ++applied;
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"applied\":" << applied << '}';
     return jsonOk(ss.str());
   }
 

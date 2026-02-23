@@ -14,6 +14,46 @@ const state = {
     learningControlId: null,
     learningControlLabel: '',
   },
+  performance: {
+    fadeSeconds: 1.0,
+    rafId: null,
+    lastTickMs: 0,
+    active: false,
+    sendInFlight: false,
+    pendingPatchPayload: '',
+    lastPatchPayload: '',
+    effectByName: {
+      allOn: {
+        name: 'allOn',
+        kind: 'brightness',
+        holdSources: { ui: false, midi: false },
+        envelope: 0,
+        snapshot: null,
+      },
+      blackout: {
+        name: 'blackout',
+        kind: 'brightness',
+        holdSources: { ui: false, midi: false },
+        envelope: 0,
+        snapshot: null,
+      },
+      rotate: {
+        name: 'rotate',
+        kind: 'movement',
+        holdSources: { ui: false, midi: false },
+        envelope: 0,
+        phase: 0,
+        snapshot: null,
+      },
+      strobe: {
+        name: 'strobe',
+        kind: 'strobe',
+        holdSources: { ui: false, midi: false },
+        envelope: 0,
+        snapshot: null,
+      },
+    },
+  },
   activeView: 'live',
   controlMode: 'slider',
   refreshTimer: null,
@@ -33,6 +73,16 @@ const els = {
   midiInputSelect: document.getElementById('midi-input-select'),
   midiStatus: document.getElementById('midi-status'),
   midiLearnStatus: document.getElementById('midi-learn-status'),
+  performanceFadeSeconds: document.getElementById('performance-fade-seconds'),
+  performanceFadeMidiSlot: document.getElementById('performance-fade-midi-slot'),
+  performanceAllOnBtn: document.getElementById('performance-all-on-btn'),
+  performanceAllOnMidiSlot: document.getElementById('performance-all-on-midi-slot'),
+  performanceBlackoutBtn: document.getElementById('performance-blackout-btn'),
+  performanceBlackoutMidiSlot: document.getElementById('performance-blackout-midi-slot'),
+  performanceRotateBtn: document.getElementById('performance-rotate-btn'),
+  performanceRotateMidiSlot: document.getElementById('performance-rotate-midi-slot'),
+  performanceStrobeBtn: document.getElementById('performance-strobe-btn'),
+  performanceStrobeMidiSlot: document.getElementById('performance-strobe-midi-slot'),
   audioInputSelect: document.getElementById('audio-input-select'),
   applyAudioInputBtn: document.getElementById('apply-audio-input-btn'),
   audioInputLabel: document.getElementById('audio-input-label'),
@@ -169,6 +219,12 @@ function iconBadge(kindOrLabel, byLabel = false) {
 
 const MIDI_STORAGE_KEY = 'tuxdmx.midi.v1';
 const MIDI_REACTIVE_CONTROL_ID = 'audio:reactive';
+const PERFORMANCE_STORAGE_KEY = 'tuxdmx.performance.v1';
+const MIDI_PERFORMANCE_FADE_CONTROL_ID = 'perf:fadeSeconds';
+const MIDI_PERFORMANCE_ALL_ON_CONTROL_ID = 'perf:allOn';
+const MIDI_PERFORMANCE_BLACKOUT_CONTROL_ID = 'perf:blackout';
+const MIDI_PERFORMANCE_ROTATE_CONTROL_ID = 'perf:rotate';
+const MIDI_PERFORMANCE_STROBE_CONTROL_ID = 'perf:strobe';
 
 function midiInputNameById(inputId) {
   const input = (state.midi.inputs || []).find((item) => item.id === inputId);
@@ -351,6 +407,15 @@ function stopMidiLearn() {
 function clearMidiMapping(controlId, { notify = true } = {}) {
   if (!state.midi.mappings[controlId]) return;
   delete state.midi.mappings[controlId];
+  if (controlId === MIDI_PERFORMANCE_ALL_ON_CONTROL_ID) {
+    setEffectSource('allOn', 'midi', false);
+  } else if (controlId === MIDI_PERFORMANCE_BLACKOUT_CONTROL_ID) {
+    setEffectSource('blackout', 'midi', false);
+  } else if (controlId === MIDI_PERFORMANCE_ROTATE_CONTROL_ID) {
+    setEffectSource('rotate', 'midi', false);
+  } else if (controlId === MIDI_PERFORMANCE_STROBE_CONTROL_ID) {
+    setEffectSource('strobe', 'midi', false);
+  }
   if (state.midi.learningControlId === controlId) {
     stopMidiLearn();
   }
@@ -575,6 +640,14 @@ function setActiveView(view, { persist = true } = {}) {
   }
 }
 
+function setLocalChannelValue(fixtureId, channelIndex, value) {
+  const fixture = (state.fixtures || []).find((item) => Number(item.id) === Number(fixtureId));
+  if (!fixture) return;
+  const channel = (fixture.channels || []).find((item) => Number(item.channelIndex) === Number(channelIndex));
+  if (!channel) return;
+  channel.value = Math.max(0, Math.min(255, Math.round(Number(value || 0))));
+}
+
 function setControlMode(mode, { persist = true, rerender = true } = {}) {
   const nextMode = mode === 'knob' ? 'knob' : 'slider';
   state.controlMode = nextMode;
@@ -610,6 +683,412 @@ function initializeUiPreferences() {
   }
   setActiveView(savedView, { persist: false });
   setControlMode(savedMode, { persist: false, rerender: false });
+}
+
+function savePerformancePreferences() {
+  try {
+    window.localStorage.setItem(PERFORMANCE_STORAGE_KEY, JSON.stringify({
+      fadeSeconds: state.performance.fadeSeconds,
+    }));
+  } catch {
+    // Ignore localStorage write failures.
+  }
+}
+
+function loadPerformancePreferences() {
+  try {
+    const raw = window.localStorage.getItem(PERFORMANCE_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return;
+    if (Number.isFinite(Number(parsed.fadeSeconds))) {
+      state.performance.fadeSeconds = Math.max(0.01, Math.min(10, Number(parsed.fadeSeconds)));
+    }
+  } catch {
+    // Ignore localStorage read failures.
+  }
+}
+
+function setPerformanceFadeSeconds(value, { persist = true } = {}) {
+  const normalized = Math.max(0.01, Math.min(10, Number(value || 1)));
+  state.performance.fadeSeconds = normalized;
+  els.performanceFadeSeconds.value = normalized.toFixed(2);
+  if (persist) {
+    savePerformancePreferences();
+  }
+}
+
+function effectByName(effectName) {
+  return state.performance.effectByName[effectName] || null;
+}
+
+function isEffectHeld(effect) {
+  if (!effect) return false;
+  return Boolean(effect.holdSources.ui || effect.holdSources.midi);
+}
+
+function snapshotKindsForEffect(effectName) {
+  if (effectName === 'allOn' || effectName === 'blackout') {
+    return new Set(['dimmer', 'red', 'green', 'blue', 'white']);
+  }
+  if (effectName === 'rotate') {
+    return new Set(['pan', 'tilt', 'pan_speed']);
+  }
+  if (effectName === 'strobe') {
+    return new Set(['strobe']);
+  }
+  return new Set();
+}
+
+function capturePerformanceSnapshot(effectName) {
+  const kinds = snapshotKindsForEffect(effectName);
+  const snapshot = [];
+
+  (state.fixtures || []).forEach((fixture) => {
+    const channels = (fixture.channels || [])
+      .filter((channel) => kinds.has(String(channel.kind || '').toLowerCase()))
+      .map((channel) => ({
+        channelIndex: Number(channel.channelIndex),
+        kind: String(channel.kind || '').toLowerCase(),
+        baseValue: Math.max(0, Math.min(255, Number(channel.value || 0))),
+      }));
+
+    if (!channels.length) return;
+    snapshot.push({
+      fixtureId: Number(fixture.id),
+      universe: Number(fixture.universe || 1),
+      startAddress: Number(fixture.startAddress || 1),
+      channels,
+    });
+  });
+
+  return snapshot;
+}
+
+function setEffectSource(effectName, source, active) {
+  const effect = effectByName(effectName);
+  if (!effect || !effect.holdSources || !(source in effect.holdSources)) return;
+
+  const prevHeld = isEffectHeld(effect);
+  effect.holdSources[source] = Boolean(active);
+  const nextHeld = isEffectHeld(effect);
+
+  // All On and Blackout are mutually exclusive hold actions.
+  if (nextHeld && effectName === 'allOn') {
+    const other = effectByName('blackout');
+    if (other) {
+      other.holdSources.ui = false;
+      other.holdSources.midi = false;
+    }
+  }
+  if (nextHeld && effectName === 'blackout') {
+    const other = effectByName('allOn');
+    if (other) {
+      other.holdSources.ui = false;
+      other.holdSources.midi = false;
+    }
+  }
+
+  if (!prevHeld && nextHeld) {
+    effect.snapshot = capturePerformanceSnapshot(effectName);
+  }
+
+  updatePerformanceButtonVisuals();
+  ensurePerformanceLoop();
+}
+
+function updatePerformanceButtonVisuals() {
+  const allOn = effectByName('allOn');
+  const blackout = effectByName('blackout');
+  const rotate = effectByName('rotate');
+  const strobe = effectByName('strobe');
+
+  els.performanceAllOnBtn.classList.toggle('is-active', Boolean(allOn && (isEffectHeld(allOn) || allOn.envelope > 0.001)));
+  els.performanceBlackoutBtn.classList.toggle(
+    'is-active',
+    Boolean(blackout && (isEffectHeld(blackout) || blackout.envelope > 0.001)),
+  );
+  els.performanceRotateBtn.classList.toggle('is-active', Boolean(rotate && (isEffectHeld(rotate) || rotate.envelope > 0.001)));
+  els.performanceStrobeBtn.classList.toggle('is-active', Boolean(strobe && (isEffectHeld(strobe) || strobe.envelope > 0.001)));
+}
+
+function buildPerformancePatchMap(dtSeconds) {
+  const fadeSeconds = Math.max(0.01, state.performance.fadeSeconds);
+  const blendStep = dtSeconds / fadeSeconds;
+
+  const patches = new Map();
+  const setPatch = (fixtureId, universe, absoluteAddress, channelIndex, value) => {
+    if (absoluteAddress < 1 || absoluteAddress > 512) return;
+    const key = `${fixtureId}:${channelIndex}`;
+    patches.set(key, {
+      fixtureId,
+      channelIndex,
+      universe,
+      absoluteAddress,
+      value: Math.max(0, Math.min(255, Math.round(value))),
+    });
+  };
+
+  const effects = Object.values(state.performance.effectByName);
+  effects.forEach((effect) => {
+    const held = isEffectHeld(effect);
+    const previousEnvelope = effect.envelope;
+    if (held) {
+      effect.envelope = Math.min(1, effect.envelope + blendStep);
+    } else {
+      effect.envelope = Math.max(0, effect.envelope - blendStep);
+    }
+    effect.justSettled = !held && previousEnvelope > 0 && effect.envelope <= 0.0001;
+  });
+
+  const allOn = effectByName('allOn');
+  if (allOn && allOn.snapshot && (allOn.envelope > 0 || allOn.justSettled || isEffectHeld(allOn))) {
+    const e = allOn.envelope;
+    allOn.snapshot.forEach((fixture) => {
+      fixture.channels.forEach((channel) => {
+        const value = channel.baseValue + ((255 - channel.baseValue) * e);
+        const absoluteAddress = fixture.startAddress + channel.channelIndex - 1;
+        setPatch(fixture.fixtureId, fixture.universe, absoluteAddress, channel.channelIndex, value);
+      });
+    });
+  }
+
+  const blackout = effectByName('blackout');
+  if (blackout && blackout.snapshot && (blackout.envelope > 0 || blackout.justSettled || isEffectHeld(blackout))) {
+    const e = blackout.envelope;
+    blackout.snapshot.forEach((fixture) => {
+      fixture.channels.forEach((channel) => {
+        const value = channel.baseValue * (1 - e);
+        const absoluteAddress = fixture.startAddress + channel.channelIndex - 1;
+        setPatch(fixture.fixtureId, fixture.universe, absoluteAddress, channel.channelIndex, value);
+      });
+    });
+  }
+
+  const rotate = effectByName('rotate');
+  if (rotate) {
+    rotate.phase += dtSeconds * (1.3 + rotate.envelope * 1.9);
+    if (rotate.phase > 10000) {
+      rotate.phase = rotate.phase % (Math.PI * 2);
+    }
+
+    if (rotate.snapshot && (rotate.envelope > 0 || rotate.justSettled || isEffectHeld(rotate))) {
+      const e = rotate.envelope;
+      rotate.snapshot.forEach((fixture) => {
+        const fixturePhase = rotate.phase + (fixture.fixtureId * 0.47);
+        fixture.channels.forEach((channel) => {
+          let value = channel.baseValue;
+          if (channel.kind === 'pan') {
+            value = channel.baseValue + Math.sin(fixturePhase) * (92 * e);
+          } else if (channel.kind === 'tilt') {
+            value = channel.baseValue + Math.cos((fixturePhase * 0.86) + 0.7) * (52 * e);
+          } else if (channel.kind === 'pan_speed') {
+            value = channel.baseValue + ((24 - channel.baseValue) * e);
+          }
+          const absoluteAddress = fixture.startAddress + channel.channelIndex - 1;
+          setPatch(fixture.fixtureId, fixture.universe, absoluteAddress, channel.channelIndex, value);
+        });
+      });
+    }
+  }
+
+  const strobe = effectByName('strobe');
+  if (strobe && strobe.snapshot && (strobe.envelope > 0 || strobe.justSettled || isEffectHeld(strobe))) {
+    const e = strobe.envelope;
+    strobe.snapshot.forEach((fixture) => {
+      fixture.channels.forEach((channel) => {
+        const target = 210;
+        const value = channel.baseValue + ((target - channel.baseValue) * e);
+        const absoluteAddress = fixture.startAddress + channel.channelIndex - 1;
+        setPatch(fixture.fixtureId, fixture.universe, absoluteAddress, channel.channelIndex, value);
+      });
+    });
+  }
+
+  effects.forEach((effect) => {
+    if (!isEffectHeld(effect) && effect.envelope <= 0.0001) {
+      effect.envelope = 0;
+      effect.snapshot = null;
+      effect.justSettled = false;
+    }
+  });
+
+  return patches;
+}
+
+function queuePerformancePatchPayload(payload) {
+  if (!payload) return;
+  if (state.performance.pendingPatchPayload === payload && state.performance.sendInFlight) return;
+  if (!state.performance.sendInFlight && state.performance.lastPatchPayload === payload) return;
+
+  state.performance.pendingPatchPayload = payload;
+  if (state.performance.sendInFlight) return;
+
+  const flush = async () => {
+    if (!state.performance.pendingPatchPayload || state.performance.sendInFlight) return;
+    const nextPayload = state.performance.pendingPatchPayload;
+    state.performance.pendingPatchPayload = '';
+    state.performance.sendInFlight = true;
+
+    try {
+      await api('/api/dmx/patches', {
+        method: 'POST',
+        body: { patches: nextPayload },
+      });
+      state.performance.lastPatchPayload = nextPayload;
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      state.performance.sendInFlight = false;
+      if (state.performance.pendingPatchPayload) {
+        flush().catch((err) => showToast(err.message, 'error'));
+      }
+    }
+  };
+
+  flush().catch((err) => showToast(err.message, 'error'));
+}
+
+function performanceFrame(timestampMs) {
+  if (!state.performance.active) return;
+
+  const last = state.performance.lastTickMs || timestampMs;
+  const dtSeconds = Math.max(0.008, Math.min(0.1, (timestampMs - last) / 1000));
+  state.performance.lastTickMs = timestampMs;
+
+  const patchMap = buildPerformancePatchMap(dtSeconds);
+  if (patchMap.size > 0) {
+    const patchParts = [];
+    patchMap.forEach((patch) => {
+      patchParts.push(`${patch.universe}:${patch.absoluteAddress}:${patch.value}`);
+      setLocalChannelValue(patch.fixtureId, patch.channelIndex, patch.value);
+    });
+    queuePerformancePatchPayload(patchParts.join(','));
+  }
+
+  updatePerformanceButtonVisuals();
+
+  const anyActive = Object.values(state.performance.effectByName).some(
+    (effect) => isEffectHeld(effect) || effect.envelope > 0.0001,
+  );
+
+  if (!anyActive && !state.performance.pendingPatchPayload && !state.performance.sendInFlight) {
+    state.performance.active = false;
+    state.performance.lastTickMs = 0;
+    state.performance.rafId = null;
+    state.performance.lastPatchPayload = '';
+    return;
+  }
+
+  state.performance.rafId = window.requestAnimationFrame(performanceFrame);
+}
+
+function ensurePerformanceLoop() {
+  if (state.performance.active) return;
+  state.performance.active = true;
+  state.performance.lastTickMs = 0;
+  state.performance.rafId = window.requestAnimationFrame(performanceFrame);
+}
+
+function bindMomentaryPerformanceButton(button, effectName) {
+  if (!button) return;
+
+  const releaseUi = () => setEffectSource(effectName, 'ui', false);
+
+  button.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    button.setPointerCapture(event.pointerId);
+    setEffectSource(effectName, 'ui', true);
+  });
+  button.addEventListener('pointerup', releaseUi);
+  button.addEventListener('pointercancel', releaseUi);
+  button.addEventListener('lostpointercapture', releaseUi);
+
+  button.addEventListener('keydown', (event) => {
+    if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
+      event.preventDefault();
+      setEffectSource(effectName, 'ui', true);
+    }
+  });
+  button.addEventListener('keyup', (event) => {
+    if (event.key === ' ' || event.key === 'Enter') {
+      event.preventDefault();
+      setEffectSource(effectName, 'ui', false);
+    }
+  });
+  button.addEventListener('blur', releaseUi);
+}
+
+function initializePerformanceControls() {
+  loadPerformancePreferences();
+  setPerformanceFadeSeconds(state.performance.fadeSeconds, { persist: false });
+
+  els.performanceFadeSeconds.addEventListener('input', () => {
+    setPerformanceFadeSeconds(els.performanceFadeSeconds.value);
+  });
+
+  bindMomentaryPerformanceButton(els.performanceAllOnBtn, 'allOn');
+  bindMomentaryPerformanceButton(els.performanceBlackoutBtn, 'blackout');
+  bindMomentaryPerformanceButton(els.performanceRotateBtn, 'rotate');
+  bindMomentaryPerformanceButton(els.performanceStrobeBtn, 'strobe');
+
+  els.performanceFadeMidiSlot.appendChild(
+    createMidiBindRow(
+      MIDI_PERFORMANCE_FADE_CONTROL_ID,
+      'Performance Fade Seconds',
+      'continuous',
+      async (value) => {
+        const seconds = 0.05 + ((Math.max(0, Math.min(255, Number(value || 0))) / 255) * 4.95);
+        setPerformanceFadeSeconds(seconds);
+      },
+    ),
+  );
+
+  els.performanceAllOnMidiSlot.appendChild(
+    createMidiBindRow(
+      MIDI_PERFORMANCE_ALL_ON_CONTROL_ID,
+      'Global Lift Hold',
+      'toggle',
+      async (enabled) => {
+        setEffectSource('allOn', 'midi', Boolean(enabled));
+      },
+    ),
+  );
+
+  els.performanceBlackoutMidiSlot.appendChild(
+    createMidiBindRow(
+      MIDI_PERFORMANCE_BLACKOUT_CONTROL_ID,
+      'Blackout Hold',
+      'toggle',
+      async (enabled) => {
+        setEffectSource('blackout', 'midi', Boolean(enabled));
+      },
+    ),
+  );
+
+  els.performanceRotateMidiSlot.appendChild(
+    createMidiBindRow(
+      MIDI_PERFORMANCE_ROTATE_CONTROL_ID,
+      'Rotate Hold',
+      'toggle',
+      async (enabled) => {
+        setEffectSource('rotate', 'midi', Boolean(enabled));
+      },
+    ),
+  );
+
+  els.performanceStrobeMidiSlot.appendChild(
+    createMidiBindRow(
+      MIDI_PERFORMANCE_STROBE_CONTROL_ID,
+      'Strobe Hold',
+      'toggle',
+      async (enabled) => {
+        setEffectSource('strobe', 'midi', Boolean(enabled));
+      },
+    ),
+  );
+
+  updatePerformanceButtonVisuals();
 }
 
 function makeChannelRow(prefill = {}) {
@@ -1148,6 +1627,7 @@ function renderFixtures(fixtures) {
 
       let sendTimer = null;
       const sendValue = (value) => {
+        setLocalChannelValue(fixture.id, channel.channelIndex, value);
         window.clearTimeout(sendTimer);
         sendTimer = window.setTimeout(async () => {
           try {
@@ -1985,6 +2465,7 @@ function installEventListeners() {
 async function boot() {
   initializeUiPreferences();
   installEventListeners();
+  initializePerformanceControls();
 
   registerMidiTarget(MIDI_REACTIVE_CONTROL_ID, {
     label: 'Music Reactive',
