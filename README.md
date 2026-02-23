@@ -31,7 +31,8 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
     - blackout
     - rotate for pan/tilt fixtures
     - strobe hit
-  - adjustable fade seconds (decimal support) with MIDI mapping
+  - per-effect intensity controls (all-on / blackout / rotate / strobe)
+  - adjustable fade seconds (decimal support) and intensity controls are MIDI-mappable
   - value-range chips
   - icon mapping for channel types and mode/range labels
   - fast blank-channel generator for unknown fixtures (manual missing workflow)

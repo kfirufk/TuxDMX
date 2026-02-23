@@ -16,6 +16,12 @@ const state = {
   },
   performance: {
     fadeSeconds: 1.0,
+    intensity: {
+      allOn: 1.0,
+      blackout: 1.0,
+      rotate: 1.0,
+      strobe: 1.0,
+    },
     rafId: null,
     lastTickMs: 0,
     active: false,
@@ -75,12 +81,20 @@ const els = {
   midiLearnStatus: document.getElementById('midi-learn-status'),
   performanceFadeSeconds: document.getElementById('performance-fade-seconds'),
   performanceFadeMidiSlot: document.getElementById('performance-fade-midi-slot'),
+  performanceAllOnIntensity: document.getElementById('performance-all-on-intensity'),
+  performanceAllOnIntensityMidiSlot: document.getElementById('performance-all-on-intensity-midi-slot'),
   performanceAllOnBtn: document.getElementById('performance-all-on-btn'),
   performanceAllOnMidiSlot: document.getElementById('performance-all-on-midi-slot'),
+  performanceBlackoutIntensity: document.getElementById('performance-blackout-intensity'),
+  performanceBlackoutIntensityMidiSlot: document.getElementById('performance-blackout-intensity-midi-slot'),
   performanceBlackoutBtn: document.getElementById('performance-blackout-btn'),
   performanceBlackoutMidiSlot: document.getElementById('performance-blackout-midi-slot'),
+  performanceRotateIntensity: document.getElementById('performance-rotate-intensity'),
+  performanceRotateIntensityMidiSlot: document.getElementById('performance-rotate-intensity-midi-slot'),
   performanceRotateBtn: document.getElementById('performance-rotate-btn'),
   performanceRotateMidiSlot: document.getElementById('performance-rotate-midi-slot'),
+  performanceStrobeIntensity: document.getElementById('performance-strobe-intensity'),
+  performanceStrobeIntensityMidiSlot: document.getElementById('performance-strobe-intensity-midi-slot'),
   performanceStrobeBtn: document.getElementById('performance-strobe-btn'),
   performanceStrobeMidiSlot: document.getElementById('performance-strobe-midi-slot'),
   audioInputSelect: document.getElementById('audio-input-select'),
@@ -221,9 +235,13 @@ const MIDI_STORAGE_KEY = 'tuxdmx.midi.v1';
 const MIDI_REACTIVE_CONTROL_ID = 'audio:reactive';
 const PERFORMANCE_STORAGE_KEY = 'tuxdmx.performance.v1';
 const MIDI_PERFORMANCE_FADE_CONTROL_ID = 'perf:fadeSeconds';
+const MIDI_PERFORMANCE_ALL_ON_INTENSITY_CONTROL_ID = 'perf:allOnIntensity';
 const MIDI_PERFORMANCE_ALL_ON_CONTROL_ID = 'perf:allOn';
+const MIDI_PERFORMANCE_BLACKOUT_INTENSITY_CONTROL_ID = 'perf:blackoutIntensity';
 const MIDI_PERFORMANCE_BLACKOUT_CONTROL_ID = 'perf:blackout';
+const MIDI_PERFORMANCE_ROTATE_INTENSITY_CONTROL_ID = 'perf:rotateIntensity';
 const MIDI_PERFORMANCE_ROTATE_CONTROL_ID = 'perf:rotate';
+const MIDI_PERFORMANCE_STROBE_INTENSITY_CONTROL_ID = 'perf:strobeIntensity';
 const MIDI_PERFORMANCE_STROBE_CONTROL_ID = 'perf:strobe';
 
 function midiInputNameById(inputId) {
@@ -689,6 +707,7 @@ function savePerformancePreferences() {
   try {
     window.localStorage.setItem(PERFORMANCE_STORAGE_KEY, JSON.stringify({
       fadeSeconds: state.performance.fadeSeconds,
+      intensity: state.performance.intensity,
     }));
   } catch {
     // Ignore localStorage write failures.
@@ -704,6 +723,21 @@ function loadPerformancePreferences() {
     if (Number.isFinite(Number(parsed.fadeSeconds))) {
       state.performance.fadeSeconds = Math.max(0.01, Math.min(10, Number(parsed.fadeSeconds)));
     }
+    if (typeof parsed.intensity === 'object' && parsed.intensity !== null) {
+      const intensity = parsed.intensity;
+      if (Number.isFinite(Number(intensity.allOn))) {
+        state.performance.intensity.allOn = Math.max(0, Math.min(1, Number(intensity.allOn)));
+      }
+      if (Number.isFinite(Number(intensity.blackout))) {
+        state.performance.intensity.blackout = Math.max(0, Math.min(1, Number(intensity.blackout)));
+      }
+      if (Number.isFinite(Number(intensity.rotate))) {
+        state.performance.intensity.rotate = Math.max(0, Math.min(1, Number(intensity.rotate)));
+      }
+      if (Number.isFinite(Number(intensity.strobe))) {
+        state.performance.intensity.strobe = Math.max(0, Math.min(1, Number(intensity.strobe)));
+      }
+    }
   } catch {
     // Ignore localStorage read failures.
   }
@@ -713,6 +747,26 @@ function setPerformanceFadeSeconds(value, { persist = true } = {}) {
   const normalized = Math.max(0.01, Math.min(10, Number(value || 1)));
   state.performance.fadeSeconds = normalized;
   els.performanceFadeSeconds.value = normalized.toFixed(2);
+  if (persist) {
+    savePerformancePreferences();
+  }
+}
+
+function setPerformanceIntensity(effectName, value, { persist = true } = {}) {
+  if (!(effectName in state.performance.intensity)) return;
+  const normalized = Math.max(0, Math.min(1, Number(value || 0)));
+  state.performance.intensity[effectName] = normalized;
+
+  if (effectName === 'allOn') {
+    els.performanceAllOnIntensity.value = normalized.toFixed(2);
+  } else if (effectName === 'blackout') {
+    els.performanceBlackoutIntensity.value = normalized.toFixed(2);
+  } else if (effectName === 'rotate') {
+    els.performanceRotateIntensity.value = normalized.toFixed(2);
+  } else if (effectName === 'strobe') {
+    els.performanceStrobeIntensity.value = normalized.toFixed(2);
+  }
+
   if (persist) {
     savePerformancePreferences();
   }
@@ -844,9 +898,11 @@ function buildPerformancePatchMap(dtSeconds) {
   const allOn = effectByName('allOn');
   if (allOn && allOn.snapshot && (allOn.envelope > 0 || allOn.justSettled || isEffectHeld(allOn))) {
     const e = allOn.envelope;
+    const intensity = state.performance.intensity.allOn;
+    const blend = e * intensity;
     allOn.snapshot.forEach((fixture) => {
       fixture.channels.forEach((channel) => {
-        const value = channel.baseValue + ((255 - channel.baseValue) * e);
+        const value = channel.baseValue + ((255 - channel.baseValue) * blend);
         const absoluteAddress = fixture.startAddress + channel.channelIndex - 1;
         setPatch(fixture.fixtureId, fixture.universe, absoluteAddress, channel.channelIndex, value);
       });
@@ -856,9 +912,11 @@ function buildPerformancePatchMap(dtSeconds) {
   const blackout = effectByName('blackout');
   if (blackout && blackout.snapshot && (blackout.envelope > 0 || blackout.justSettled || isEffectHeld(blackout))) {
     const e = blackout.envelope;
+    const intensity = state.performance.intensity.blackout;
+    const blend = e * intensity;
     blackout.snapshot.forEach((fixture) => {
       fixture.channels.forEach((channel) => {
-        const value = channel.baseValue * (1 - e);
+        const value = channel.baseValue * (1 - blend);
         const absoluteAddress = fixture.startAddress + channel.channelIndex - 1;
         setPatch(fixture.fixtureId, fixture.universe, absoluteAddress, channel.channelIndex, value);
       });
@@ -867,23 +925,24 @@ function buildPerformancePatchMap(dtSeconds) {
 
   const rotate = effectByName('rotate');
   if (rotate) {
-    rotate.phase += dtSeconds * (1.3 + rotate.envelope * 1.9);
+    const intensity = state.performance.intensity.rotate;
+    const movementBlend = rotate.envelope * intensity;
+    rotate.phase += dtSeconds * (1.3 + movementBlend * 1.9);
     if (rotate.phase > 10000) {
       rotate.phase = rotate.phase % (Math.PI * 2);
     }
 
     if (rotate.snapshot && (rotate.envelope > 0 || rotate.justSettled || isEffectHeld(rotate))) {
-      const e = rotate.envelope;
       rotate.snapshot.forEach((fixture) => {
         const fixturePhase = rotate.phase + (fixture.fixtureId * 0.47);
         fixture.channels.forEach((channel) => {
           let value = channel.baseValue;
           if (channel.kind === 'pan') {
-            value = channel.baseValue + Math.sin(fixturePhase) * (92 * e);
+            value = channel.baseValue + Math.sin(fixturePhase) * (92 * movementBlend);
           } else if (channel.kind === 'tilt') {
-            value = channel.baseValue + Math.cos((fixturePhase * 0.86) + 0.7) * (52 * e);
+            value = channel.baseValue + Math.cos((fixturePhase * 0.86) + 0.7) * (52 * movementBlend);
           } else if (channel.kind === 'pan_speed') {
-            value = channel.baseValue + ((24 - channel.baseValue) * e);
+            value = channel.baseValue + ((24 - channel.baseValue) * movementBlend);
           }
           const absoluteAddress = fixture.startAddress + channel.channelIndex - 1;
           setPatch(fixture.fixtureId, fixture.universe, absoluteAddress, channel.channelIndex, value);
@@ -895,10 +954,12 @@ function buildPerformancePatchMap(dtSeconds) {
   const strobe = effectByName('strobe');
   if (strobe && strobe.snapshot && (strobe.envelope > 0 || strobe.justSettled || isEffectHeld(strobe))) {
     const e = strobe.envelope;
+    const intensity = state.performance.intensity.strobe;
+    const blend = e * intensity;
     strobe.snapshot.forEach((fixture) => {
       fixture.channels.forEach((channel) => {
         const target = 210;
-        const value = channel.baseValue + ((target - channel.baseValue) * e);
+        const value = channel.baseValue + ((target - channel.baseValue) * blend);
         const absoluteAddress = fixture.startAddress + channel.channelIndex - 1;
         setPatch(fixture.fixtureId, fixture.universe, absoluteAddress, channel.channelIndex, value);
       });
@@ -1022,9 +1083,25 @@ function bindMomentaryPerformanceButton(button, effectName) {
 function initializePerformanceControls() {
   loadPerformancePreferences();
   setPerformanceFadeSeconds(state.performance.fadeSeconds, { persist: false });
+  setPerformanceIntensity('allOn', state.performance.intensity.allOn, { persist: false });
+  setPerformanceIntensity('blackout', state.performance.intensity.blackout, { persist: false });
+  setPerformanceIntensity('rotate', state.performance.intensity.rotate, { persist: false });
+  setPerformanceIntensity('strobe', state.performance.intensity.strobe, { persist: false });
 
   els.performanceFadeSeconds.addEventListener('input', () => {
     setPerformanceFadeSeconds(els.performanceFadeSeconds.value);
+  });
+  els.performanceAllOnIntensity.addEventListener('input', () => {
+    setPerformanceIntensity('allOn', els.performanceAllOnIntensity.value);
+  });
+  els.performanceBlackoutIntensity.addEventListener('input', () => {
+    setPerformanceIntensity('blackout', els.performanceBlackoutIntensity.value);
+  });
+  els.performanceRotateIntensity.addEventListener('input', () => {
+    setPerformanceIntensity('rotate', els.performanceRotateIntensity.value);
+  });
+  els.performanceStrobeIntensity.addEventListener('input', () => {
+    setPerformanceIntensity('strobe', els.performanceStrobeIntensity.value);
   });
 
   bindMomentaryPerformanceButton(els.performanceAllOnBtn, 'allOn');
@@ -1044,6 +1121,17 @@ function initializePerformanceControls() {
     ),
   );
 
+  els.performanceAllOnIntensityMidiSlot.appendChild(
+    createMidiBindRow(
+      MIDI_PERFORMANCE_ALL_ON_INTENSITY_CONTROL_ID,
+      'Global Lift Strength',
+      'continuous',
+      async (value) => {
+        setPerformanceIntensity('allOn', Math.max(0, Math.min(255, Number(value || 0))) / 255);
+      },
+    ),
+  );
+
   els.performanceAllOnMidiSlot.appendChild(
     createMidiBindRow(
       MIDI_PERFORMANCE_ALL_ON_CONTROL_ID,
@@ -1051,6 +1139,17 @@ function initializePerformanceControls() {
       'toggle',
       async (enabled) => {
         setEffectSource('allOn', 'midi', Boolean(enabled));
+      },
+    ),
+  );
+
+  els.performanceBlackoutIntensityMidiSlot.appendChild(
+    createMidiBindRow(
+      MIDI_PERFORMANCE_BLACKOUT_INTENSITY_CONTROL_ID,
+      'Blackout Strength',
+      'continuous',
+      async (value) => {
+        setPerformanceIntensity('blackout', Math.max(0, Math.min(255, Number(value || 0))) / 255);
       },
     ),
   );
@@ -1066,6 +1165,17 @@ function initializePerformanceControls() {
     ),
   );
 
+  els.performanceRotateIntensityMidiSlot.appendChild(
+    createMidiBindRow(
+      MIDI_PERFORMANCE_ROTATE_INTENSITY_CONTROL_ID,
+      'Rotate Intensity',
+      'continuous',
+      async (value) => {
+        setPerformanceIntensity('rotate', Math.max(0, Math.min(255, Number(value || 0))) / 255);
+      },
+    ),
+  );
+
   els.performanceRotateMidiSlot.appendChild(
     createMidiBindRow(
       MIDI_PERFORMANCE_ROTATE_CONTROL_ID,
@@ -1073,6 +1183,17 @@ function initializePerformanceControls() {
       'toggle',
       async (enabled) => {
         setEffectSource('rotate', 'midi', Boolean(enabled));
+      },
+    ),
+  );
+
+  els.performanceStrobeIntensityMidiSlot.appendChild(
+    createMidiBindRow(
+      MIDI_PERFORMANCE_STROBE_INTENSITY_CONTROL_ID,
+      'Strobe Strength',
+      'continuous',
+      async (value) => {
+        setPerformanceIntensity('strobe', Math.max(0, Math.min(255, Number(value || 0))) / 255);
       },
     ),
   );

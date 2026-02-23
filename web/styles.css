@@ -314,6 +314,13 @@ body {
   color: var(--ink-soft);
 }
 
+.performance-card label {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
 .perf-hold-btn {
   user-select: none;
   touch-action: manipulation;

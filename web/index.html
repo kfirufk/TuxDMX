@@ -113,6 +113,11 @@
           <article class="performance-card">
             <h3>Global Lift</h3>
             <p>Hold to push dimmer + RGBW channels toward full output. Release to return.</p>
+            <label>
+              Strength (0-1)
+              <input id="performance-all-on-intensity" type="number" min="0" max="1" step="0.01" value="1.00">
+            </label>
+            <div id="performance-all-on-intensity-midi-slot"></div>
             <button id="performance-all-on-btn" class="btn primary perf-hold-btn" type="button">Hold: All On</button>
             <div id="performance-all-on-midi-slot"></div>
           </article>
@@ -120,6 +125,11 @@
           <article class="performance-card">
             <h3>Blackout Hold</h3>
             <p>Hold to fade all dimmer + RGBW channels down to black. Release to restore.</p>
+            <label>
+              Strength (0-1)
+              <input id="performance-blackout-intensity" type="number" min="0" max="1" step="0.01" value="1.00">
+            </label>
+            <div id="performance-blackout-intensity-midi-slot"></div>
             <button id="performance-blackout-btn" class="btn danger perf-hold-btn" type="button">Hold: Blackout</button>
             <div id="performance-blackout-midi-slot"></div>
           </article>
@@ -127,6 +137,11 @@
           <article class="performance-card">
             <h3>Rotate Move</h3>
             <p>Hold to animate pan/tilt fixtures. Pan speed channels fade in/out with the move.</p>
+            <label>
+              Intensity (0-1)
+              <input id="performance-rotate-intensity" type="number" min="0" max="1" step="0.01" value="1.00">
+            </label>
+            <div id="performance-rotate-intensity-midi-slot"></div>
             <button id="performance-rotate-btn" class="btn ghost perf-hold-btn" type="button">Hold: Rotate</button>
             <div id="performance-rotate-midi-slot"></div>
           </article>
@@ -134,6 +149,11 @@
           <article class="performance-card">
             <h3>Strobe Hit</h3>
             <p>Cool extra: hold to bring strobe channels in, release for smooth return.</p>
+            <label>
+              Strength (0-1)
+              <input id="performance-strobe-intensity" type="number" min="0" max="1" step="0.01" value="1.00">
+            </label>
+            <div id="performance-strobe-intensity-midi-slot"></div>
             <button id="performance-strobe-btn" class="btn ghost perf-hold-btn" type="button">Hold: Strobe Hit</button>
             <div id="performance-strobe-midi-slot"></div>
           </article>
