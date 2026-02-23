@@ -20,6 +20,7 @@ set(TUXDMX_SOURCES
     src/dmx/dmx_engine.cpp
     src/dmx/enttec_dmx_pro.cpp
     src/http/http_server.cpp
+    src/logger/logger.cpp
 )
 
 add_executable(tuxdmx ${TUXDMX_SOURCES})

@@ -22,6 +22,8 @@ class EnttecDmxPro {
   void disconnect();
 
   bool sendUniverse(const std::array<std::uint8_t, 512>& channels);
+  void setWriteRetryLimit(int limit);
+  int writeRetryLimit() const;
   DmxDeviceStatus status() const;
 
  private:
@@ -34,6 +36,7 @@ class EnttecDmxPro {
   mutable std::mutex mutex_;
   DmxDeviceStatus status_;
   int consecutiveWriteFailures_ = 0;
+  int writeRetryLimit_ = 10;
 
 #ifdef _WIN32
   void* handle_ = nullptr;

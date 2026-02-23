@@ -17,6 +17,8 @@
 #include <unistd.h>
 #endif
 
+#include "logger.hpp"
+
 namespace tuxdmx {
 
 namespace {
@@ -409,6 +411,7 @@ bool EnttecDmxPro::discoverAndConnect() {
       status_.firmwareMinor = fwMinor;
       status_.lastError.clear();
       consecutiveWriteFailures_ = 0;
+      logMessage(LogLevel::Info, "dmx", "Connected to ENTTEC DMX USB Pro on " + port + " (serial " + serial + ")");
       return true;
     }
 
@@ -448,8 +451,6 @@ void EnttecDmxPro::disconnect() {
 }
 
 bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
-  static constexpr int kDisconnectAfterConsecutiveWriteFailures = 4;
-
   std::scoped_lock lock(mutex_);
   if (!status_.connected) {
     return false;
@@ -468,16 +469,18 @@ bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
 
   if (!writeBytes(frame.data(), frame.size())) {
     ++consecutiveWriteFailures_;
-    if (consecutiveWriteFailures_ < kDisconnectAfterConsecutiveWriteFailures) {
+    if (consecutiveWriteFailures_ < writeRetryLimit_) {
       status_.lastError =
-          "DMX write failed (" + std::to_string(consecutiveWriteFailures_) + "/" +
-          std::to_string(kDisconnectAfterConsecutiveWriteFailures) + "), retrying";
+          "DMX write failed (" + std::to_string(consecutiveWriteFailures_) + "/" + std::to_string(writeRetryLimit_)
+          + "), retrying";
+      logMessage(LogLevel::Warn, "dmx", status_.lastError);
       return false;
     }
 
     status_.connected = false;
     status_.lastError =
         "DMX write failed repeatedly (" + std::to_string(consecutiveWriteFailures_) + " tries), reconnecting";
+    logMessage(LogLevel::Error, "dmx", status_.lastError);
 #ifdef _WIN32
     if (handle_ != nullptr) {
       CloseHandle(static_cast<HANDLE>(handle_));
@@ -497,9 +500,23 @@ bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
   return true;
 }
 
+void EnttecDmxPro::setWriteRetryLimit(int limit) {
+  std::scoped_lock lock(mutex_);
+  writeRetryLimit_ = std::clamp(limit, 1, 200);
+  status_.lastError.clear();
+}
+
+int EnttecDmxPro::writeRetryLimit() const {
+  std::scoped_lock lock(mutex_);
+  return writeRetryLimit_;
+}
+
 DmxDeviceStatus EnttecDmxPro::status() const {
   std::scoped_lock lock(mutex_);
-  return status_;
+  DmxDeviceStatus out = status_;
+  out.writeRetryLimit = writeRetryLimit_;
+  out.consecutiveWriteFailures = consecutiveWriteFailures_;
+  return out;
 }
 
 }  // namespace tuxdmx

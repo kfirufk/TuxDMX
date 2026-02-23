@@ -4,6 +4,7 @@ const state = {
   groups: [],
   dmx: null,
   audio: null,
+  logs: [],
   midi: {
     supported: false,
     access: null,
@@ -62,6 +63,8 @@ const state = {
   },
   activeView: 'live',
   controlMode: 'slider',
+  compactMode: false,
+  hideMidiMode: false,
   autoRefreshPauseUntil: 0,
   refreshTimer: null,
   toastTimer: null,
@@ -74,6 +77,9 @@ const els = {
   devicePort: document.getElementById('device-port'),
   deviceSerial: document.getElementById('device-serial'),
   deviceFw: document.getElementById('device-fw'),
+  dmxRetryLimit: document.getElementById('dmx-retry-limit'),
+  applyDmxRetryBtn: document.getElementById('apply-dmx-retry-btn'),
+  dmxRetryStatus: document.getElementById('dmx-retry-status'),
   audioBackend: document.getElementById('audio-backend'),
   audioEnergy: document.getElementById('audio-energy'),
   audioBass: document.getElementById('audio-bass'),
@@ -117,6 +123,8 @@ const els = {
   applyUniverseBtn: document.getElementById('apply-universe-btn'),
   controlModeSlider: document.getElementById('control-mode-slider'),
   controlModeKnob: document.getElementById('control-mode-knob'),
+  layoutCompactToggle: document.getElementById('layout-compact-toggle'),
+  layoutHideMidiToggle: document.getElementById('layout-hide-midi-toggle'),
   controlModeButtons: [...document.querySelectorAll('[data-control-mode]')],
   audioReactiveMidiLearn: document.getElementById('audio-reactive-midi-learn'),
   audioReactiveMidiClear: document.getElementById('audio-reactive-midi-clear'),
@@ -158,6 +166,8 @@ const els = {
   learnRangeLabel: document.getElementById('learn-range-label'),
   learnAddRange: document.getElementById('learn-add-range'),
   learnKindButtons: [...document.querySelectorAll('.learn-kind-btn')],
+  clearDebugLogBtn: document.getElementById('clear-debug-log-btn'),
+  debugLogView: document.getElementById('debug-log-view'),
   toast: document.getElementById('toast'),
   channelEditorTemplate: document.getElementById('channel-editor-template'),
   rangeEditorTemplate: document.getElementById('range-editor-template'),
@@ -267,6 +277,7 @@ function iconBadge(kindOrLabel, byLabel = false) {
 }
 
 const MIDI_STORAGE_KEY = 'tuxdmx.midi.v1';
+const LAYOUT_STORAGE_KEY = 'tuxdmx.layout.v1';
 const MIDI_REACTIVE_CONTROL_ID = 'audio:reactive';
 const PERFORMANCE_STORAGE_KEY = 'tuxdmx.performance.v1';
 const MIDI_PERFORMANCE_FADE_CONTROL_ID = 'perf:fadeSeconds';
@@ -725,17 +736,85 @@ function setControlMode(mode, { persist = true, rerender = true } = {}) {
   }
 }
 
+function setCompactMode(enabled, { persist = true, rerender = true } = {}) {
+  state.compactMode = Boolean(enabled);
+  document.body.classList.toggle('layout-compact', state.compactMode);
+  if (els.layoutCompactToggle) {
+    els.layoutCompactToggle.classList.toggle('is-active', state.compactMode);
+    els.layoutCompactToggle.setAttribute('aria-pressed', state.compactMode ? 'true' : 'false');
+  }
+
+  if (persist) {
+    try {
+      const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      const next = {
+        ...(typeof parsed === 'object' && parsed !== null ? parsed : {}),
+        compact: state.compactMode,
+      };
+      window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+
+  if (rerender) {
+    renderFixtures(state.fixtures || []);
+    renderGroups(state.groups || []);
+  }
+}
+
+function setHideMidiMode(enabled, { persist = true, rerender = true } = {}) {
+  state.hideMidiMode = Boolean(enabled);
+  document.body.classList.toggle('layout-hide-midi', state.hideMidiMode);
+  if (els.layoutHideMidiToggle) {
+    els.layoutHideMidiToggle.classList.toggle('is-active', state.hideMidiMode);
+    els.layoutHideMidiToggle.setAttribute('aria-pressed', state.hideMidiMode ? 'true' : 'false');
+  }
+
+  if (persist) {
+    try {
+      const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      const next = {
+        ...(typeof parsed === 'object' && parsed !== null ? parsed : {}),
+        hideMidi: state.hideMidiMode,
+      };
+      window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+
+  if (rerender) {
+    renderFixtures(state.fixtures || []);
+    renderGroups(state.groups || []);
+  }
+}
+
 function initializeUiPreferences() {
   let savedView = 'live';
   let savedMode = 'slider';
+  let savedCompact = false;
+  let savedHideMidi = false;
   try {
     savedView = window.localStorage.getItem('tuxdmx.activeView') || 'live';
     savedMode = window.localStorage.getItem('tuxdmx.controlMode') || 'slider';
+    const rawLayout = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (rawLayout) {
+      const parsed = JSON.parse(rawLayout);
+      if (typeof parsed === 'object' && parsed !== null) {
+        savedCompact = Boolean(parsed.compact);
+        savedHideMidi = Boolean(parsed.hideMidi);
+      }
+    }
   } catch {
     // Ignore storage access issues; defaults are good fallback values.
   }
   setActiveView(savedView, { persist: false });
   setControlMode(savedMode, { persist: false, rerender: false });
+  setCompactMode(savedCompact, { persist: false, rerender: false });
+  setHideMidiMode(savedHideMidi, { persist: false, rerender: false });
 }
 
 function savePerformancePreferences() {
@@ -1484,6 +1563,15 @@ function renderStatus(dmx, audio) {
   els.devicePort.textContent = `Port: ${dmx.port || '--'}`;
   els.deviceSerial.textContent = `Serial: ${dmx.serial || '--'}`;
   els.deviceFw.textContent = `Firmware: ${dmx.firmwareMajor}.${dmx.firmwareMinor}`;
+  if (els.dmxRetryStatus) {
+    const retries = Number(dmx.writeRetryLimit || 10);
+    const failStreak = Number(dmx.consecutiveWriteFailures || 0);
+    els.dmxRetryStatus.textContent = `Retries: ${retries} • Fail streak: ${failStreak}`;
+  }
+  if (els.dmxRetryLimit && document.activeElement !== els.dmxRetryLimit) {
+    const retries = Number(dmx.writeRetryLimit || 10);
+    els.dmxRetryLimit.value = String(Math.max(1, Math.min(200, retries)));
+  }
   els.audioBackend.textContent = `Audio Backend: ${audio.backend || '--'}`;
   const liveEnergy = Math.max(0, Math.min(1, Number(audio.energy || 0)));
   els.audioEnergy.textContent = `Energy: ${liveEnergy.toFixed(2)}`;
@@ -1592,6 +1680,27 @@ function renderStatus(dmx, audio) {
   }
 
   updateMidiTargetUi(MIDI_REACTIVE_CONTROL_ID);
+}
+
+function renderDebugLogs(logs) {
+  state.logs = Array.isArray(logs) ? logs : [];
+  if (!els.debugLogView) return;
+
+  if (!state.logs.length) {
+    els.debugLogView.textContent = 'No logs yet.';
+    return;
+  }
+
+  const lines = state.logs.map((entry) => {
+    const ts = String(entry.timestamp || '--');
+    const level = String(entry.level || 'INFO').toUpperCase();
+    const scope = String(entry.scope || 'app');
+    const message = String(entry.message || '');
+    return `${ts} [${level}] ${scope}: ${message}`;
+  });
+
+  els.debugLogView.textContent = lines.join('\n');
+  els.debugLogView.scrollTop = els.debugLogView.scrollHeight;
 }
 
 function escapeHtml(text = '') {
@@ -1758,6 +1867,37 @@ function createChannelControl(initialValue, onChange) {
     : createSlider(initialValue, onChange);
 }
 
+async function moveFixture(fixtureId, direction) {
+  const ordered = [...(state.fixtures || [])]
+    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(a.id) - Number(b.id));
+  const index = ordered.findIndex((fixture) => Number(fixture.id) === Number(fixtureId));
+  if (index < 0) return;
+
+  const targetIndex = index + direction;
+  if (targetIndex < 0 || targetIndex >= ordered.length) return;
+
+  const [item] = ordered.splice(index, 1);
+  ordered.splice(targetIndex, 0, item);
+
+  const fixtureIds = ordered.map((fixture) => fixture.id).join(',');
+  await api('/api/fixtures/reorder', {
+    method: 'POST',
+    body: { fixture_ids: fixtureIds },
+  });
+  await loadState({ silent: true });
+}
+
+async function deleteFixture(fixture) {
+  if (!fixture) return;
+  const confirmed = window.confirm(`Delete fixture "${fixture.name}"? This keeps the template but removes this patch.`);
+  if (!confirmed) return;
+
+  await api(`/api/fixtures/${fixture.id}/delete`, {
+    method: 'POST',
+  });
+  await loadState({ silent: true });
+}
+
 function renderFixtures(fixtures) {
   state.fixtures = fixtures;
   els.fixtureBoard.innerHTML = '';
@@ -1772,7 +1912,7 @@ function renderFixtures(fixtures) {
     return;
   }
 
-  fixtures.forEach((fixture) => {
+  fixtures.forEach((fixture, fixtureIndex) => {
     const card = document.createElement('article');
     card.className = 'fixture-card';
 
@@ -1809,7 +1949,57 @@ function renderFixtures(fixtures) {
       toggleLabel.lastChild.textContent = toggle.checked ? 'Enabled' : 'Disabled';
     });
 
-    head.append(titleWrap, toggleLabel);
+    const actions = document.createElement('div');
+    actions.className = 'fixture-head-actions';
+
+    const orderActions = document.createElement('div');
+    orderActions.className = 'fixture-order-actions';
+
+    const upBtn = document.createElement('button');
+    upBtn.type = 'button';
+    upBtn.className = 'btn ghost btn-mini';
+    upBtn.textContent = 'Up';
+    upBtn.disabled = fixtureIndex === 0;
+    upBtn.addEventListener('click', async () => {
+      try {
+        await moveFixture(fixture.id, -1);
+        showToast(`Moved "${fixture.name}" up`);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+
+    const downBtn = document.createElement('button');
+    downBtn.type = 'button';
+    downBtn.className = 'btn ghost btn-mini';
+    downBtn.textContent = 'Down';
+    downBtn.disabled = fixtureIndex === fixtures.length - 1;
+    downBtn.addEventListener('click', async () => {
+      try {
+        await moveFixture(fixture.id, 1);
+        showToast(`Moved "${fixture.name}" down`);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'btn danger btn-mini';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', async () => {
+      try {
+        await deleteFixture(fixture);
+        showToast(`Deleted fixture "${fixture.name}"`);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+
+    orderActions.append(upBtn, downBtn, deleteBtn);
+    actions.append(orderActions, toggleLabel);
+
+    head.append(titleWrap, actions);
 
     const channelGrid = document.createElement('div');
     channelGrid.className = 'channel-grid';
@@ -1861,8 +2051,8 @@ function renderFixtures(fixtures) {
         const chip = document.createElement('button');
         chip.type = 'button';
         chip.className = 'range-chip';
-        chip.title = `${range.startValue}-${range.endValue}`;
-        chip.innerHTML = `${iconBadge(range.label, true)}<span>${escapeHtml(range.label)}</span>`;
+        chip.title = `${range.startValue}-${range.endValue} ${range.label || ''}`.trim();
+        chip.innerHTML = `${iconBadge(range.label, true)}<span>${escapeHtml(range.label)} <em>${range.startValue}-${range.endValue}</em></span>`;
         chip.addEventListener('click', () => {
           const mid = Math.round((range.startValue + range.endValue) / 2);
           control.setValue(mid);
@@ -2082,6 +2272,7 @@ async function loadState({ silent = false } = {}) {
   try {
     const data = await api('/api/state');
     renderStatus(data.dmx, data.audio);
+    renderDebugLogs(data.logs || []);
     renderTemplates(data.templates || []);
     renderFixtures(data.fixtures || []);
     renderGroups(data.groups || []);
@@ -2494,6 +2685,37 @@ async function applyOutputUniverse() {
   }
 }
 
+async function applyDmxRetryLimit() {
+  if (!els.dmxRetryLimit) return;
+
+  const retries = Number(els.dmxRetryLimit.value || 10);
+  if (!Number.isFinite(retries) || retries < 1 || retries > 200) {
+    showToast('Retries must be between 1 and 200', 'error');
+    return;
+  }
+
+  try {
+    await api('/api/dmx/write-retry-limit', {
+      method: 'POST',
+      body: { retries: String(Math.round(retries)) },
+    });
+    await loadState({ silent: true });
+    showToast(`DMX retries set to ${Math.round(retries)}`);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function clearDebugLogs() {
+  try {
+    await api('/api/logs/clear', { method: 'POST' });
+    renderDebugLogs([]);
+    showToast('Debug log cleared');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
 function releasePerformanceEffectsImmediately() {
   if (state.performance.rafId) {
     window.cancelAnimationFrame(state.performance.rafId);
@@ -2667,6 +2889,24 @@ function installEventListeners() {
   els.fixtureChannelCount.addEventListener('input', updatePatchRangePreview);
 
   els.refreshBtn.addEventListener('click', () => loadState());
+  if (els.applyDmxRetryBtn) {
+    els.applyDmxRetryBtn.addEventListener('click', () => {
+      applyDmxRetryLimit().catch((err) => showToast(err.message, 'error'));
+    });
+  }
+  if (els.dmxRetryLimit) {
+    els.dmxRetryLimit.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        applyDmxRetryLimit().catch((err) => showToast(err.message, 'error'));
+      }
+    });
+  }
+  if (els.clearDebugLogBtn) {
+    els.clearDebugLogBtn.addEventListener('click', () => {
+      clearDebugLogs().catch((err) => showToast(err.message, 'error'));
+    });
+  }
   els.audioToggle.addEventListener('click', toggleReactiveMode);
   if (els.reactiveProfileSelect) {
     els.reactiveProfileSelect.addEventListener('change', () => {
@@ -2725,6 +2965,17 @@ function installEventListeners() {
       setControlMode(button.dataset.controlMode || 'slider');
     });
   });
+
+  if (els.layoutCompactToggle) {
+    els.layoutCompactToggle.addEventListener('click', () => {
+      setCompactMode(!state.compactMode);
+    });
+  }
+  if (els.layoutHideMidiToggle) {
+    els.layoutHideMidiToggle.addEventListener('click', () => {
+      setHideMidiMode(!state.hideMidiMode);
+    });
+  }
 
   els.templateExportBtn.addEventListener('click', exportTemplates);
   els.templateImportBtn.addEventListener('click', () => els.templateImportFile.click());

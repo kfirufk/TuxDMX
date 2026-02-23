@@ -50,6 +50,53 @@ std::string columnText(sqlite3_stmt* stmt, int col) {
   return text == nullptr ? "" : std::string(text);
 }
 
+bool tableHasColumn(sqlite3* db, const char* tableName, const char* columnName, std::string& error) {
+  Statement stmt;
+  const std::string sql = std::string("PRAGMA table_info(") + tableName + ");";
+  if (!prepare(db, sql.c_str(), stmt, error)) {
+    return false;
+  }
+
+  while (sqlite3_step(stmt.stmt) == SQLITE_ROW) {
+    if (columnText(stmt.stmt, 1) == columnName) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool normalizeFixtureSortOrder(sqlite3* db, std::string& error) {
+  Statement selectStmt;
+  if (!prepare(db, "SELECT id FROM fixtures ORDER BY sort_order, id;", selectStmt, error)) {
+    return false;
+  }
+
+  std::vector<int> ids;
+  while (sqlite3_step(selectStmt.stmt) == SQLITE_ROW) {
+    ids.push_back(columnInt(selectStmt.stmt, 0));
+  }
+
+  Statement updateStmt;
+  if (!prepare(db, "UPDATE fixtures SET sort_order = ? WHERE id = ?;", updateStmt, error)) {
+    return false;
+  }
+
+  int sortOrder = 1;
+  for (int id : ids) {
+    sqlite3_reset(updateStmt.stmt);
+    sqlite3_clear_bindings(updateStmt.stmt);
+    sqlite3_bind_int(updateStmt.stmt, 1, sortOrder++);
+    sqlite3_bind_int(updateStmt.stmt, 2, id);
+    if (sqlite3_step(updateStmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db);
+      return false;
+    }
+  }
+
+  return true;
+}
+
 struct SeedRange {
   int startValue = 0;
   int endValue = 0;
@@ -408,6 +455,7 @@ CREATE TABLE IF NOT EXISTS fixtures (
   universe INTEGER NOT NULL DEFAULT 1,
   start_address INTEGER NOT NULL,
   channel_count INTEGER NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (template_id) REFERENCES fixture_templates(id)
@@ -440,7 +488,23 @@ CREATE INDEX IF NOT EXISTS idx_template_channels_template ON template_channels(t
 CREATE INDEX IF NOT EXISTS idx_fixture_channel_values_fixture ON fixture_channel_values(fixture_id);
 )SQL";
 
-  return execSql(db_, kSchemaSql, error);
+  if (!execSql(db_, kSchemaSql, error)) {
+    return false;
+  }
+
+  const bool hasSortOrder = tableHasColumn(db_, "fixtures", "sort_order", error);
+  if (!error.empty()) {
+    return false;
+  }
+
+  if (!hasSortOrder) {
+    if (!execSql(db_, "ALTER TABLE fixtures ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;", error)) {
+      return false;
+    }
+  }
+
+  // Backfill/compact sort order in deterministic fixture creation order.
+  return normalizeFixtureSortOrder(db_, error);
 }
 
 bool Database::beginTransaction(std::string& error) {
@@ -703,6 +767,17 @@ Database::CreateFixtureResult Database::createFixture(const std::string& name, i
     return result;
   }
 
+  int nextSortOrder = 1;
+  {
+    Statement orderStmt;
+    if (!prepare(db_, "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM fixtures;", orderStmt, result.error)) {
+      return result;
+    }
+    if (sqlite3_step(orderStmt.stmt) == SQLITE_ROW) {
+      nextSortOrder = std::max(1, columnInt(orderStmt.stmt, 0));
+    }
+  }
+
   if (!allowOverlap) {
     Statement overlapStmt;
     if (!prepare(db_,
@@ -731,8 +806,8 @@ Database::CreateFixtureResult Database::createFixture(const std::string& name, i
   do {
     Statement insertFixtureStmt;
     if (!prepare(db_,
-                 "INSERT INTO fixtures(name, template_id, universe, start_address, channel_count, enabled) "
-                 "VALUES(?, ?, ?, ?, ?, 1);",
+                 "INSERT INTO fixtures(name, template_id, universe, start_address, channel_count, sort_order, enabled) "
+                 "VALUES(?, ?, ?, ?, ?, ?, 1);",
                  insertFixtureStmt, result.error)) {
       break;
     }
@@ -742,6 +817,7 @@ Database::CreateFixtureResult Database::createFixture(const std::string& name, i
     sqlite3_bind_int(insertFixtureStmt.stmt, 3, universe);
     sqlite3_bind_int(insertFixtureStmt.stmt, 4, startAddress);
     sqlite3_bind_int(insertFixtureStmt.stmt, 5, channelCount);
+    sqlite3_bind_int(insertFixtureStmt.stmt, 6, nextSortOrder);
 
     if (sqlite3_step(insertFixtureStmt.stmt) != SQLITE_DONE) {
       result.error = sqlite3_errmsg(db_);
@@ -810,9 +886,10 @@ std::vector<FixtureInstance> Database::listFixtures(std::string& error) {
 
   Statement fixtureStmt;
   if (!prepare(db_,
-               "SELECT f.id, f.name, f.template_id, t.name, f.universe, f.start_address, f.channel_count, f.enabled "
+               "SELECT f.id, f.name, f.template_id, t.name, f.universe, f.start_address, f.channel_count, "
+               "f.sort_order, f.enabled "
                "FROM fixtures f JOIN fixture_templates t ON t.id = f.template_id "
-               "ORDER BY f.universe, f.start_address, f.name COLLATE NOCASE;",
+               "ORDER BY f.sort_order, f.id;",
                fixtureStmt, error)) {
     return fixtures;
   }
@@ -826,7 +903,8 @@ std::vector<FixtureInstance> Database::listFixtures(std::string& error) {
     f.universe = columnInt(fixtureStmt.stmt, 4);
     f.startAddress = columnInt(fixtureStmt.stmt, 5);
     f.channelCount = columnInt(fixtureStmt.stmt, 6);
-    f.enabled = columnInt(fixtureStmt.stmt, 7) != 0;
+    f.sortOrder = columnInt(fixtureStmt.stmt, 7);
+    f.enabled = columnInt(fixtureStmt.stmt, 8) != 0;
     fixtures.push_back(std::move(f));
   }
 
@@ -926,6 +1004,112 @@ bool Database::setFixtureEnabled(int fixtureId, bool enabled, std::string& error
   }
 
   return true;
+}
+
+bool Database::deleteFixture(int fixtureId, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  if (!beginTransaction(error)) {
+    return false;
+  }
+
+  do {
+    Statement stmt;
+    if (!prepare(db_, "DELETE FROM fixtures WHERE id = ?;", stmt, error)) {
+      break;
+    }
+    sqlite3_bind_int(stmt.stmt, 1, fixtureId);
+    if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db_);
+      break;
+    }
+    if (sqlite3_changes(db_) == 0) {
+      error = "Fixture not found";
+      break;
+    }
+
+    if (!normalizeFixtureSortOrder(db_, error)) {
+      break;
+    }
+
+    if (!commitTransaction(error)) {
+      break;
+    }
+    return true;
+  } while (false);
+
+  rollbackTransaction();
+  return false;
+}
+
+bool Database::reorderFixtures(const std::vector<int>& fixtureIds, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  std::vector<int> existingIds;
+  {
+    Statement stmt;
+    if (!prepare(db_, "SELECT id FROM fixtures ORDER BY sort_order, id;", stmt, error)) {
+      return false;
+    }
+    while (sqlite3_step(stmt.stmt) == SQLITE_ROW) {
+      existingIds.push_back(columnInt(stmt.stmt, 0));
+    }
+  }
+
+  if (existingIds.empty()) {
+    return true;
+  }
+
+  std::vector<int> requested = fixtureIds;
+  std::sort(requested.begin(), requested.end());
+  requested.erase(std::unique(requested.begin(), requested.end()), requested.end());
+
+  std::vector<int> expected = existingIds;
+  std::sort(expected.begin(), expected.end());
+
+  if (requested != expected || fixtureIds.size() != expected.size()) {
+    error = "Fixture reorder list must include all fixture ids exactly once";
+    return false;
+  }
+
+  if (!beginTransaction(error)) {
+    return false;
+  }
+
+  do {
+    Statement updateStmt;
+    if (!prepare(db_, "UPDATE fixtures SET sort_order = ? WHERE id = ?;", updateStmt, error)) {
+      break;
+    }
+
+    int sortOrder = 1;
+    for (int fixtureId : fixtureIds) {
+      sqlite3_reset(updateStmt.stmt);
+      sqlite3_clear_bindings(updateStmt.stmt);
+      sqlite3_bind_int(updateStmt.stmt, 1, sortOrder++);
+      sqlite3_bind_int(updateStmt.stmt, 2, fixtureId);
+      if (sqlite3_step(updateStmt.stmt) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db_);
+        break;
+      }
+      if (sqlite3_changes(db_) == 0) {
+        error = "Fixture id " + std::to_string(fixtureId) + " not found";
+        break;
+      }
+    }
+
+    if (!error.empty()) {
+      break;
+    }
+
+    if (!commitTransaction(error)) {
+      break;
+    }
+    return true;
+  } while (false);
+
+  rollbackTransaction();
+  return false;
 }
 
 int Database::createGroup(const std::string& name, std::string& error) {

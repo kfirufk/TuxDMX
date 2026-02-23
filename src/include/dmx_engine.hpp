@@ -29,6 +29,8 @@ class DmxEngine {
   void ensureUniverse(int universe);
   void setOutputUniverse(int universe);
   int outputUniverse() const;
+  void setWriteRetryLimit(int limit);
+  int writeRetryLimit() const;
   std::vector<int> knownUniverses() const;
 
   DmxDeviceStatus status() const;

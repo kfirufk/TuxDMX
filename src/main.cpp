@@ -7,6 +7,7 @@
 
 #include "app_controller.hpp"
 #include "http_server.hpp"
+#include "logger.hpp"
 #include "utils.hpp"
 
 namespace {
@@ -15,7 +16,9 @@ std::atomic<bool> gStopRequested = false;
 void handleSignal(int) { gStopRequested.store(true); }
 
 void printUsage(const char* argv0) {
-  std::cout << "Usage: " << argv0 << " [--bind 0.0.0.0] [--port 8080] [--db data/tuxdmx.sqlite] [--web-root ./web]\n";
+  std::cout << "Usage: " << argv0
+            << " [--bind 0.0.0.0] [--port 8080] [--db data/tuxdmx.sqlite] [--web-root ./web] [--log-file "
+               "data/tuxdmx.log]\n";
 }
 
 }  // namespace
@@ -25,6 +28,7 @@ int main(int argc, char** argv) {
   int port = 8080;
   std::string dbPath = "data/tuxdmx.sqlite";
   std::string webRoot = TUXDMX_DEFAULT_WEB_ROOT;
+  std::string logFilePath = "data/tuxdmx.log";
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -39,6 +43,8 @@ int main(int argc, char** argv) {
       dbPath = argv[++i];
     } else if (arg == "--web-root" && i + 1 < argc) {
       webRoot = argv[++i];
+    } else if (arg == "--log-file" && i + 1 < argc) {
+      logFilePath = argv[++i];
     } else if (arg == "--help" || arg == "-h") {
       printUsage(argv[0]);
       return 0;
@@ -52,10 +58,21 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, handleSignal);
   std::signal(SIGTERM, handleSignal);
 
+  std::string loggerError;
+  if (!tuxdmx::initializeLogger(logFilePath, loggerError)) {
+    std::cerr << "Failed to initialize logger: " << loggerError << "\n";
+    return 1;
+  }
+
+  tuxdmx::logMessage(tuxdmx::LogLevel::Info, "server", "Starting tuxdmx");
+  tuxdmx::logMessage(tuxdmx::LogLevel::Info, "server", std::string("Log file: ") + logFilePath);
+
   tuxdmx::AppController app(dbPath, webRoot);
   std::string error;
   if (!app.initialize(error)) {
     std::cerr << "Failed to initialize app: " << error << "\n";
+    tuxdmx::logMessage(tuxdmx::LogLevel::Error, "server", "Failed to initialize app: " + error);
+    tuxdmx::shutdownLogger();
     return 1;
   }
 
@@ -65,20 +82,27 @@ int main(int argc, char** argv) {
 
   if (!server.start(error)) {
     std::cerr << "Failed to start HTTP server: " << error << "\n";
+    tuxdmx::logMessage(tuxdmx::LogLevel::Error, "server", "Failed to start HTTP server: " + error);
     app.shutdown();
+    tuxdmx::shutdownLogger();
     return 1;
   }
 
   std::cout << "tuxdmx started\n";
   std::cout << "HTTP UI: http://" << bindAddress << ':' << port << "\n";
   std::cout << "Press Ctrl+C to stop\n";
+  tuxdmx::logMessage(tuxdmx::LogLevel::Info, "server",
+                     std::string("HTTP UI: http://") + bindAddress + ":" + std::to_string(port));
 
   while (!gStopRequested.load()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
 
+  tuxdmx::logMessage(tuxdmx::LogLevel::Info, "server", "Shutdown requested");
   server.stop();
   app.shutdown();
+  tuxdmx::logMessage(tuxdmx::LogLevel::Info, "server", "Shutdown complete");
+  tuxdmx::shutdownLogger();
 
   return 0;
 }

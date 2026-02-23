@@ -199,7 +199,7 @@ body {
 .status-strip {
   border-radius: var(--radius-lg);
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 0.5rem;
   padding: 0.75rem;
 }
@@ -241,6 +241,33 @@ body {
 .inline-controls .btn,
 .inline-controls input {
   flex: 1;
+}
+
+#dmx-retry-limit {
+  min-width: 72px;
+  max-width: 92px;
+}
+
+.debug-log-card {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.debug-log-view {
+  margin: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(199, 221, 212, 0.9);
+  background: rgba(247, 250, 248, 0.9);
+  color: #163733;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.72rem;
+  line-height: 1.28;
+  min-height: 120px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 0.48rem;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .view-nav {
@@ -651,6 +678,19 @@ textarea {
   gap: 0.5rem;
 }
 
+.fixture-head-actions {
+  display: grid;
+  justify-items: end;
+  gap: 0.26rem;
+}
+
+.fixture-order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.24rem;
+  justify-content: flex-end;
+}
+
 .fixture-head h3 {
   margin: 0;
   font-size: 1rem;
@@ -873,6 +913,40 @@ textarea {
 
 .range-chip:hover {
   background: rgba(14, 147, 132, 0.16);
+}
+
+.range-chip em {
+  font-style: normal;
+  opacity: 0.9;
+  font-size: 0.58rem;
+}
+
+body.layout-hide-midi .midi-bind-row,
+body.layout-hide-midi .audio-midi-row,
+body.layout-hide-midi .audio-midi-label,
+body.layout-hide-midi #midi-routing-card,
+body.layout-hide-midi #audio-reactive-midi-learn,
+body.layout-hide-midi #audio-reactive-midi-clear,
+body.layout-hide-midi [id$='-midi-slot'] {
+  display: none !important;
+}
+
+body.layout-compact .fixture-meta,
+body.layout-compact .channel-title,
+body.layout-compact .range-chip-wrap,
+body.layout-compact .midi-bind-row {
+  display: none !important;
+}
+
+body.layout-compact .channel-card {
+  gap: 0.22rem;
+  padding: 0.36rem;
+}
+
+body.layout-compact .channel-sub {
+  font-size: 0.74rem;
+  font-weight: 800;
+  color: var(--ink);
 }
 
 .toast {

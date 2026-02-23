@@ -105,6 +105,10 @@ int DmxEngine::outputUniverse() const {
   return outputUniverse_;
 }
 
+void DmxEngine::setWriteRetryLimit(int limit) { device_.setWriteRetryLimit(limit); }
+
+int DmxEngine::writeRetryLimit() const { return device_.writeRetryLimit(); }
+
 std::vector<int> DmxEngine::knownUniverses() const {
   std::scoped_lock lock(mutex_);
   std::vector<int> universes;

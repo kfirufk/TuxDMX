@@ -45,6 +45,8 @@ class Database {
   std::vector<FixtureInstance> listFixtures(std::string& error);
   bool updateFixtureChannelValue(int fixtureId, int channelIndex, int value, ChannelPatch& patch, std::string& error);
   bool setFixtureEnabled(int fixtureId, bool enabled, std::string& error);
+  bool deleteFixture(int fixtureId, std::string& error);
+  bool reorderFixtures(const std::vector<int>& fixtureIds, std::string& error);
 
   int createGroup(const std::string& name, std::string& error);
   bool setGroupFixtures(int groupId, const std::vector<int>& fixtureIds, std::string& error);

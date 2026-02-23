@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "logger.hpp"
 #include "utils.hpp"
 
 namespace tuxdmx {
@@ -290,6 +291,7 @@ void appendFixtureArrayJson(std::ostringstream& ss, const std::vector<FixtureIns
     ss << "\"universe\":" << f.universe << ',';
     ss << "\"startAddress\":" << f.startAddress << ',';
     ss << "\"channelCount\":" << f.channelCount << ',';
+    ss << "\"sortOrder\":" << f.sortOrder << ',';
     ss << "\"enabled\":" << jsonBool(f.enabled) << ',';
     ss << "\"channels\":[";
 
@@ -405,6 +407,24 @@ void appendAudioInputDevicesJson(std::ostringstream& ss, const std::vector<Audio
   ss << ']';
 }
 
+void appendLogArrayJson(std::ostringstream& ss, const std::vector<LogEntry>& logs) {
+  ss << '[';
+  bool first = true;
+  for (const auto& entry : logs) {
+    if (!first) {
+      ss << ',';
+    }
+    first = false;
+    ss << '{';
+    ss << "\"timestamp\":\"" << jsonEscape(entry.timestamp) << "\",";
+    ss << "\"level\":\"" << jsonEscape(entry.level) << "\",";
+    ss << "\"scope\":\"" << jsonEscape(entry.scope) << "\",";
+    ss << "\"message\":\"" << jsonEscape(entry.message) << "\"";
+    ss << '}';
+  }
+  ss << ']';
+}
+
 }  // namespace
 
 AppController::AppController(std::string dbPath, std::string webRoot)
@@ -445,6 +465,12 @@ void AppController::shutdown() {
 }
 
 HttpResponse AppController::jsonError(int status, const std::string& message) {
+  if (status >= 500) {
+    logMessage(LogLevel::Error, "api", std::to_string(status) + " " + message);
+  } else if (status >= 400 && status != 404) {
+    logMessage(LogLevel::Warn, "api", std::to_string(status) + " " + message);
+  }
+
   HttpResponse response;
   response.status = status;
   response.contentType = "application/json; charset=utf-8";
@@ -529,6 +555,8 @@ std::string AppController::buildStatusJson() {
   ss << "\"firmwareMajor\":" << dmxStatus.firmwareMajor << ',';
   ss << "\"firmwareMinor\":" << dmxStatus.firmwareMinor << ',';
   ss << "\"lastError\":\"" << jsonEscape(dmxStatus.lastError) << "\",";
+  ss << "\"writeRetryLimit\":" << dmxStatus.writeRetryLimit << ',';
+  ss << "\"consecutiveWriteFailures\":" << dmxStatus.consecutiveWriteFailures << ',';
   ss << "\"outputUniverse\":" << dmx_.outputUniverse() << ',';
   ss << "\"knownUniverses\":[";
 
@@ -607,6 +635,8 @@ std::string AppController::buildStateJson() {
   ss << "\"firmwareMajor\":" << dmxStatus.firmwareMajor << ',';
   ss << "\"firmwareMinor\":" << dmxStatus.firmwareMinor << ',';
   ss << "\"lastError\":\"" << jsonEscape(dmxStatus.lastError) << "\",";
+  ss << "\"writeRetryLimit\":" << dmxStatus.writeRetryLimit << ',';
+  ss << "\"consecutiveWriteFailures\":" << dmxStatus.consecutiveWriteFailures << ',';
   ss << "\"outputUniverse\":" << outputUniverse << ',';
   ss << "\"knownUniverses\":[";
 
@@ -647,6 +677,9 @@ std::string AppController::buildStateJson() {
 
   ss << ",\"groups\":";
   appendGroupArrayJson(ss, groups);
+
+  ss << ",\"logs\":";
+  appendLogArrayJson(ss, recentLogs(300));
 
   ss << '}';
   return ss.str();
@@ -744,20 +777,26 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
 
     auto& state = reactiveStates_[fixture.id];
 
-    // Smoothed energy keeps fixture movement musical instead of twitchy.
-    // Increase/decrease the blend factors to get snappier or smoother response.
-    state.smoothedEnergy = state.smoothedEnergy * 0.82F + metrics.energy * 0.18F;
+    const float rawEnergy = std::clamp(metrics.energy, 0.0F, 1.0F);
 
-    // Ignore tiny beat spikes in near-silence so moving heads do not drift when the room is quiet.
-    const float beatGate = std::max(0.05F, gate * 0.85F);
-    const bool strongBeat = metrics.beat && (metrics.energy >= beatGate);
-    bool nearSilence = !strongBeat && metrics.energy < gate;
+    // Volume blackout needs faster release than balanced mode so fixtures stop quickly after a transient.
+    if (volumeBlackoutProfile) {
+      const float alpha = rawEnergy > state.smoothedEnergy ? 0.32F : 0.55F;
+      state.smoothedEnergy = state.smoothedEnergy * (1.0F - alpha) + rawEnergy * alpha;
+    } else {
+      state.smoothedEnergy = state.smoothedEnergy * 0.82F + rawEnergy * 0.18F;
+    }
+
+    // In volume blackout we do not allow beat markers below threshold to wake movement.
+    const float beatGate = volumeBlackoutProfile ? std::max(gate, 0.20F) : std::max(0.05F, gate * 0.85F);
+    const bool strongBeat = metrics.beat && (rawEnergy >= beatGate);
+    bool nearSilence = volumeBlackoutProfile ? (rawEnergy < gate) : (!strongBeat && rawEnergy < gate);
     if (volumeBlackoutProfile && simulatedAudioSource) {
       // In this profile, synthetic fallback audio should never drive fixtures.
       nearSilence = true;
     }
     if (nearSilence) {
-      state.smoothedEnergy *= 0.75F;
+      state.smoothedEnergy *= volumeBlackoutProfile ? 0.45F : 0.75F;
       if (state.smoothedEnergy < 0.01F) {
         state.smoothedEnergy = 0.0F;
       }
@@ -766,6 +805,8 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
     const float activity = gate >= 0.99F
                                ? 0.0F
                                : std::clamp((state.smoothedEnergy - gate) / std::max(0.01F, 1.0F - gate), 0.0F, 1.0F);
+    const float motionActivity =
+        volumeBlackoutProfile ? std::clamp((activity - 0.18F) / 0.82F, 0.0F, 1.0F) : activity;
 
     // Hue motion follows meaningful audio activity. When quiet, it barely changes.
     float hueStep = volumeBlackoutProfile && nearSilence ? 0.0F : (0.06F + (activity * 2.4F));
@@ -785,7 +826,9 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
     }
 
     const float colorFloor = volumeBlackoutProfile ? 0.0F : 0.26F;
-    const float colorValue = std::clamp(colorFloor + state.smoothedEnergy * 0.74F, 0.0F, 1.0F);
+    const float colorValue = volumeBlackoutProfile
+                                 ? (nearSilence ? 0.0F : std::clamp(activity * 1.05F, 0.0F, 1.0F))
+                                 : std::clamp(colorFloor + state.smoothedEnergy * 0.74F, 0.0F, 1.0F);
     const auto rgb = hsvToRgb(state.hue + (strongBeat ? 12.0F : 0.0F), 0.9F, colorValue);
 
     std::vector<ChannelPatch> patches;
@@ -802,36 +845,42 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
 
       if (kind == "dimmer") {
         // Master dimmer combines overall loudness and bass accents.
-        const float dimmerBase = volumeBlackoutProfile ? 0.0F : 30.0F;
-        const float dimmer =
-            dimmerBase + (state.smoothedEnergy * 170.0F) + (metrics.bass * 46.0F) + (strongBeat ? 18.0F : 0.0F);
-        if (volumeBlackoutProfile && nearSilence) {
-          nextValue = 0;
+        if (volumeBlackoutProfile) {
+          if (nearSilence || activity < 0.02F) {
+            nextValue = 0;
+          } else {
+            const float dimmer = (activity * 215.0F) + (strongBeat ? 20.0F : 0.0F);
+            nextValue = clampDmx(static_cast<int>(std::round(dimmer)));
+          }
         } else {
+          const float dimmer = 30.0F + (state.smoothedEnergy * 170.0F) + (metrics.bass * 46.0F) + (strongBeat ? 18.0F : 0.0F);
           nextValue = clampDmx(static_cast<int>(std::round(dimmer)));
         }
       } else if (kind == "pan") {
         // Pan stays parked at center when audio activity is very low.
-        if (activity < 0.03F) {
+        if (motionActivity < 0.03F || (volumeBlackoutProfile && nearSilence)) {
           nextValue = 128;
         } else {
-          const float amplitude = 16.0F + (activity * 106.0F);
+          const float amplitude = 16.0F + (motionActivity * 106.0F);
           const float pan = 128.0F + std::sin(phase * 1.13F) * amplitude;
           nextValue = clampDmx(static_cast<int>(std::round(pan)));
         }
       } else if (kind == "tilt") {
         // Tilt follows pan behavior and remains still in near-silence.
-        if (activity < 0.03F) {
+        if (motionActivity < 0.03F || (volumeBlackoutProfile && nearSilence)) {
           nextValue = 128;
         } else {
-          const float amplitude = 9.0F + (activity * 66.0F);
+          const float amplitude = 9.0F + (motionActivity * 66.0F);
           const float tilt = 128.0F + std::cos((phase * 0.93F) + 0.8F) * amplitude;
           nextValue = clampDmx(static_cast<int>(std::round(tilt)));
         }
       } else if (kind == "pan_speed") {
         // This channel is documented as 0=fast, 255=slow, so we invert energy.
         // High music energy => lower DMX value => faster movement.
-        float speedValue = nearSilence ? 255.0F : (240.0F - (activity * 200.0F) - (strongBeat ? 16.0F : 0.0F));
+        float speedValue =
+            (nearSilence || (volumeBlackoutProfile && motionActivity < 0.03F))
+                ? 255.0F
+                : (240.0F - (motionActivity * 200.0F) - (strongBeat ? 16.0F : 0.0F));
         speedValue = std::clamp(speedValue, 15.0F, 255.0F);
         nextValue = static_cast<int>(std::round(speedValue));
       } else if (kind == "red") {
@@ -842,13 +891,25 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         nextValue = volumeBlackoutProfile && nearSilence ? 0 : rgb[2];
       } else if (kind == "white") {
         // White is used as a sparkle accent on transients/treble.
-        const float whiteBase = volumeBlackoutProfile ? 0.0F : 8.0F;
-        const float white = whiteBase + (metrics.treble * 130.0F) + (strongBeat ? 70.0F : 0.0F);
-        nextValue = volumeBlackoutProfile && nearSilence ? 0 : clampDmx(static_cast<int>(std::round(white)));
+        if (volumeBlackoutProfile) {
+          if (nearSilence || activity < 0.05F) {
+            nextValue = 0;
+          } else {
+            const float white = (activity * 120.0F) + (strongBeat ? 70.0F : 0.0F);
+            nextValue = clampDmx(static_cast<int>(std::round(white)));
+          }
+        } else {
+          const float white = 8.0F + (metrics.treble * 130.0F) + (strongBeat ? 70.0F : 0.0F);
+          nextValue = clampDmx(static_cast<int>(std::round(white)));
+        }
       } else if (kind == "speed") {
         // Effect speed scales with measured BPM and overall energy.
-        const float speed = 14.0F + (metrics.bpm * 0.55F) + (state.smoothedEnergy * 86.0F);
-        nextValue = clampDmx(static_cast<int>(std::round(speed)));
+        if (volumeBlackoutProfile && nearSilence) {
+          nextValue = 0;
+        } else {
+          const float speed = 14.0F + (metrics.bpm * 0.55F) + (state.smoothedEnergy * 86.0F);
+          nextValue = clampDmx(static_cast<int>(std::round(speed)));
+        }
       } else if (kind == "strobe") {
         std::optional<ChannelRange> targetRange;
         if (!nearSilence && (strongBeat || metrics.energy > std::max(0.72F, gate + 0.40F))) {
@@ -1036,6 +1097,20 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
 
   if (request.method == "GET" && request.path == "/api/state") {
     return jsonOk(buildStateJson());
+  }
+
+  if (request.method == "GET" && request.path == "/api/logs") {
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"logs\":";
+    appendLogArrayJson(ss, recentLogs(500));
+    ss << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/logs/clear") {
+    clearRecentLogs();
+    logMessage(LogLevel::Info, "server", "Debug log cleared from UI");
+    return jsonOk("{\"ok\":true}");
   }
 
   if (request.method == "GET" && request.path == "/api/templates") {
@@ -1354,6 +1429,38 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     return jsonOk("{\"ok\":true}");
   }
 
+  if (request.method == "POST" && request.path == "/api/fixtures/reorder") {
+    auto form = parseFormEncoded(request.body);
+    auto idsIt = form.find("fixture_ids");
+    if (idsIt == form.end() || trim(idsIt->second).empty()) {
+      return jsonError(422, "fixture_ids is required");
+    }
+
+    const auto fixtureIds = parseCsvInts(idsIt->second);
+    std::string error;
+    if (!db_.reorderFixtures(fixtureIds, error)) {
+      return jsonError(422, error);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "fixtures" &&
+      segments[3] == "delete") {
+    int fixtureId = 0;
+    if (!parseInt(segments[2], fixtureId)) {
+      return jsonError(400, "Invalid fixture id");
+    }
+
+    std::string error;
+    if (!db_.deleteFixture(fixtureId, error)) {
+      return jsonError(422, error);
+    }
+
+    rebuildAllUniversesFromDatabase();
+    return jsonOk("{\"ok\":true}");
+  }
+
   if (request.method == "POST" && request.path == "/api/groups") {
     auto form = parseFormEncoded(request.body);
     auto nameIt = form.find("name");
@@ -1596,6 +1703,23 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     return jsonOk("{\"ok\":true,\"reactiveMode\":false}");
   }
 
+  if (request.method == "POST" && request.path == "/api/dmx/write-retry-limit") {
+    auto form = parseFormEncoded(request.body);
+    std::string error;
+    int retries = 10;
+    if (!getRequiredInt(form, "retries", retries, error)) {
+      return jsonError(422, error);
+    }
+
+    retries = std::clamp(retries, 1, 200);
+    dmx_.setWriteRetryLimit(retries);
+    logMessage(LogLevel::Info, "dmx", "Write retry limit set to " + std::to_string(retries));
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"retries\":" << retries << '}';
+    return jsonOk(ss.str());
+  }
+
   if (request.method == "POST" && request.path == "/api/dmx/output-universe") {
     auto form = parseFormEncoded(request.body);
     std::string error;
@@ -1639,6 +1763,7 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     auto form = parseFormEncoded(request.body);
     const bool enabled = parseBoolLike(form, "enabled");
     audio_.setReactiveMode(enabled);
+    logMessage(LogLevel::Info, "audio", std::string("Reactive mode ") + (enabled ? "enabled" : "disabled"));
 
     if (!enabled) {
       rebuildAllUniversesFromDatabase();
@@ -1661,6 +1786,7 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
 
     threshold = std::clamp(threshold, 0.0F, 1.0F);
     reactiveVolumeThreshold_.store(threshold);
+    logMessage(LogLevel::Info, "audio", "Reactive threshold set to " + std::to_string(threshold));
 
     std::ostringstream ss;
     ss << "{\"ok\":true,\"reactiveVolumeThreshold\":" << threshold << '}';
@@ -1676,6 +1802,7 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
 
     const int profile = reactiveProfileFromName(profileIt->second);
     reactiveProfile_.store(profile);
+    logMessage(LogLevel::Info, "audio", "Reactive profile set to " + reactiveProfileName(profile));
 
     std::ostringstream ss;
     ss << "{\"ok\":true,\"reactiveProfile\":\"" << jsonEscape(reactiveProfileName(profile)) << "\"}";
@@ -1693,6 +1820,7 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     if (!audio_.selectInputDevice(deviceId, error)) {
       return jsonError(422, error);
     }
+    logMessage(LogLevel::Info, "audio", "Selected input device id " + std::to_string(audio_.selectedInputDeviceId()));
 
     std::ostringstream ss;
     ss << "{\"ok\":true,\"selectedInputDeviceId\":" << audio_.selectedInputDeviceId() << '}';

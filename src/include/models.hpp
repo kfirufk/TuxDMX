@@ -39,6 +39,7 @@ struct FixtureInstance {
   int universe = 1;
   int startAddress = 1;
   int channelCount = 0;
+  int sortOrder = 0;
   bool enabled = true;
   std::map<int, int> channelValues;
 };
@@ -56,6 +57,8 @@ struct DmxDeviceStatus {
   int firmwareMajor = 0;
   int firmwareMinor = 0;
   std::string lastError;
+  int writeRetryLimit = 10;
+  int consecutiveWriteFailures = 0;
 };
 
 struct AudioMetrics {

@@ -21,6 +21,10 @@
           <button id="control-mode-slider" class="btn ghost is-active" data-control-mode="slider" type="button">Sliders</button>
           <button id="control-mode-knob" class="btn ghost" data-control-mode="knob" type="button">Knobs</button>
         </div>
+        <div class="control-style-switch">
+          <button id="layout-compact-toggle" class="btn ghost" type="button">Compact</button>
+          <button id="layout-hide-midi-toggle" class="btn ghost" type="button">Hide MIDI</button>
+        </div>
         <button id="refresh-btn" class="btn ghost">Refresh</button>
         <div class="audio-toggle-stack">
           <button id="audio-toggle" class="btn accent">Music Reactive: Off</button>
@@ -42,6 +46,11 @@
         <h2>Connection</h2>
         <p id="device-port">Port: --</p>
         <p id="device-serial">Serial: --</p>
+        <div class="inline-controls">
+          <input id="dmx-retry-limit" type="number" min="1" max="200" value="10" aria-label="DMX retry limit">
+          <button id="apply-dmx-retry-btn" class="btn ghost" type="button">Apply Retries</button>
+        </div>
+        <p id="dmx-retry-status">Retries: -- • Fail streak: --</p>
       </article>
       <article>
         <h2>Engine</h2>
@@ -76,13 +85,20 @@
         <p id="output-universe-label">Current: U1</p>
         <p id="universe-help">Each universe is a separate 512-channel DMX space.</p>
       </article>
-      <article>
+      <article id="midi-routing-card">
         <h2>MIDI Routing</h2>
         <div class="inline-controls">
           <select id="midi-input-select"></select>
         </div>
         <p id="midi-status">MIDI: checking browser support...</p>
         <p id="midi-learn-status">Learn: idle</p>
+      </article>
+      <article class="debug-log-card">
+        <h2>Debug Log</h2>
+        <div class="inline-controls">
+          <button id="clear-debug-log-btn" class="btn ghost" type="button">Clear</button>
+        </div>
+        <pre id="debug-log-view" class="debug-log-view">No logs yet.</pre>
       </article>
     </section>
 
