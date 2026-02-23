@@ -297,6 +297,24 @@ void appendGroupArrayJson(std::ostringstream& ss, const std::vector<FixtureGroup
   ss << ']';
 }
 
+void appendAudioInputDevicesJson(std::ostringstream& ss, const std::vector<AudioInputDevice>& devices) {
+  ss << '[';
+  bool first = true;
+  for (const auto& device : devices) {
+    if (!first) {
+      ss << ',';
+    }
+    first = false;
+
+    ss << '{';
+    ss << "\"id\":" << device.id << ',';
+    ss << "\"name\":\"" << jsonEscape(device.name) << "\",";
+    ss << "\"isDefault\":" << jsonBool(device.isDefault);
+    ss << '}';
+  }
+  ss << ']';
+}
+
 }  // namespace
 
 AppController::AppController(std::string dbPath, std::string webRoot)
@@ -405,6 +423,10 @@ std::vector<AppController::FixtureResolvedView> AppController::resolveFixtures(s
 std::string AppController::buildStatusJson() {
   const auto dmxStatus = dmx_.status();
   const auto metrics = audio_.currentMetrics();
+  const auto inputDevices = audio_.inputDevices();
+  const int defaultInputDeviceId = audio_.defaultInputDeviceId();
+  const int selectedInputDeviceId = audio_.selectedInputDeviceId();
+  const int activeInputDeviceId = audio_.activeInputDeviceId();
 
   std::ostringstream ss;
   ss << "{\"ok\":true,\"dmx\":{";
@@ -431,6 +453,12 @@ std::string AppController::buildStatusJson() {
   ss << "},\"audio\":{";
   ss << "\"reactiveMode\":" << jsonBool(audio_.reactiveMode()) << ',';
   ss << "\"backend\":\"" << jsonEscape(audio_.backendName()) << "\",";
+  ss << "\"defaultInputDeviceId\":" << defaultInputDeviceId << ',';
+  ss << "\"selectedInputDeviceId\":" << selectedInputDeviceId << ',';
+  ss << "\"activeInputDeviceId\":" << activeInputDeviceId << ',';
+  ss << "\"inputDevices\":";
+  appendAudioInputDevicesJson(ss, inputDevices);
+  ss << ',';
   ss << "\"energy\":" << metrics.energy << ',';
   ss << "\"bass\":" << metrics.bass << ',';
   ss << "\"treble\":" << metrics.treble << ',';
@@ -465,6 +493,10 @@ std::string AppController::buildStateJson() {
 
   const auto dmxStatus = dmx_.status();
   const auto metrics = audio_.currentMetrics();
+  const auto inputDevices = audio_.inputDevices();
+  const int defaultInputDeviceId = audio_.defaultInputDeviceId();
+  const int selectedInputDeviceId = audio_.selectedInputDeviceId();
+  const int activeInputDeviceId = audio_.activeInputDeviceId();
   const auto outputUniverse = dmx_.outputUniverse();
   const auto universes = sortedUniverseList(fixtures, dmx_.knownUniverses());
 
@@ -495,6 +527,12 @@ std::string AppController::buildStateJson() {
   ss << ",\"audio\":{";
   ss << "\"reactiveMode\":" << jsonBool(audio_.reactiveMode()) << ',';
   ss << "\"backend\":\"" << jsonEscape(audio_.backendName()) << "\",";
+  ss << "\"defaultInputDeviceId\":" << defaultInputDeviceId << ',';
+  ss << "\"selectedInputDeviceId\":" << selectedInputDeviceId << ',';
+  ss << "\"activeInputDeviceId\":" << activeInputDeviceId << ',';
+  ss << "\"inputDevices\":";
+  appendAudioInputDevicesJson(ss, inputDevices);
+  ss << ',';
   ss << "\"energy\":" << metrics.energy << ',';
   ss << "\"bass\":" << metrics.bass << ',';
   ss << "\"treble\":" << metrics.treble << ',';
@@ -1343,6 +1381,25 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     return jsonOk(ss.str());
   }
 
+  if (request.method == "POST" && request.path == "/api/dmx/universes") {
+    auto form = parseFormEncoded(request.body);
+    std::string error;
+    int universe = 1;
+    if (!getRequiredInt(form, "universe", universe, error)) {
+      return jsonError(422, error);
+    }
+
+    if (universe < 1) {
+      return jsonError(422, "Universe must be >= 1");
+    }
+
+    dmx_.ensureUniverse(universe);
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"universe\":" << universe << '}';
+    return jsonOk(ss.str(), 201);
+  }
+
   if (request.method == "POST" && request.path == "/api/audio/reactive") {
     auto form = parseFormEncoded(request.body);
     const bool enabled = parseBoolLike(form, "enabled");
@@ -1353,6 +1410,23 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     }
 
     return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && request.path == "/api/audio/input-device") {
+    auto form = parseFormEncoded(request.body);
+    std::string error;
+    int deviceId = -1;
+    if (!getRequiredInt(form, "device_id", deviceId, error)) {
+      return jsonError(422, error);
+    }
+
+    if (!audio_.selectInputDevice(deviceId, error)) {
+      return jsonError(422, error);
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"selectedInputDeviceId\":" << audio_.selectedInputDeviceId() << '}';
+    return jsonOk(ss.str());
   }
 
   return jsonError(404, "Unknown API route");

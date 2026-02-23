@@ -71,6 +71,15 @@ void DmxEngine::clearUniverse(int universe) {
   universes_[universe] = makeZeroUniverse();
 }
 
+void DmxEngine::ensureUniverse(int universe) {
+  if (universe < 1) {
+    return;
+  }
+
+  std::scoped_lock lock(mutex_);
+  universes_.try_emplace(universe, makeZeroUniverse());
+}
+
 void DmxEngine::setOutputUniverse(int universe) {
   if (universe < 1) {
     return;

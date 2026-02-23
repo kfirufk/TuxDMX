@@ -17,6 +17,10 @@
         <h1>TuxDMX Studio</h1>
       </div>
       <div class="topbar-actions">
+        <div class="control-style-switch">
+          <button id="control-mode-slider" class="btn ghost is-active" data-control-mode="slider" type="button">Sliders</button>
+          <button id="control-mode-knob" class="btn ghost" data-control-mode="knob" type="button">Knobs</button>
+        </div>
         <button id="refresh-btn" class="btn ghost">Refresh</button>
         <button id="audio-toggle" class="btn accent">Music Reactive: Off</button>
       </div>
@@ -44,54 +48,47 @@
         <p id="audio-bpm">BPM: --</p>
       </article>
       <article>
-        <h2>Output Universe</h2>
+        <h2>Audio Input</h2>
+        <div class="inline-controls">
+          <select id="audio-input-select"></select>
+          <button id="apply-audio-input-btn" class="btn ghost" type="button">Apply</button>
+        </div>
+        <p id="audio-input-label">Selected: Default</p>
+      </article>
+      <article>
+        <h2>Universe Routing</h2>
         <div class="inline-controls">
           <select id="output-universe-select"></select>
-          <button id="apply-universe-btn" class="btn ghost">Apply</button>
+          <button id="apply-universe-btn" class="btn ghost" type="button">Switch</button>
+        </div>
+        <div class="inline-controls">
+          <input id="new-universe-number" type="number" min="1" value="2" aria-label="New universe number">
+          <button id="create-universe-btn" class="btn ghost" type="button">Create</button>
         </div>
         <p id="output-universe-label">Current: U1</p>
+        <p id="universe-help">Each universe is a separate 512-channel DMX space.</p>
       </article>
     </section>
 
-    <section class="workspace-grid">
-      <article class="panel glass">
+    <nav class="view-nav glass" id="view-nav">
+      <button class="view-tab is-active" type="button" data-view-tab="live">Live</button>
+      <button class="view-tab" type="button" data-view-tab="patch">Patch</button>
+      <button class="view-tab" type="button" data-view-tab="templates">Templates</button>
+      <button class="view-tab" type="button" data-view-tab="groups">Groups</button>
+      <button class="view-tab" type="button" data-view-tab="learn">Learn</button>
+    </nav>
+
+    <section class="view-page is-active" data-view-page="live">
+      <section class="panel glass">
         <div class="panel-head">
-          <h2>Template Builder</h2>
-          <p>Create custom fixtures and define channel ranges.</p>
+          <h2>Live Control</h2>
+          <p>Play channels live while music reactive mode runs. Use Sliders/Knobs toggle in the toolbar.</p>
         </div>
+        <div id="fixture-board" class="fixture-board"></div>
+      </section>
+    </section>
 
-        <div class="inline-controls template-actions">
-          <button id="template-export-btn" class="btn ghost" type="button">Export Templates</button>
-          <button id="template-import-btn" class="btn ghost" type="button">Import Templates</button>
-          <input type="file" id="template-import-file" accept="application/json" hidden>
-        </div>
-
-        <form id="template-form" class="stack-form">
-          <label>
-            Template Name
-            <input type="text" name="name" required placeholder="AliExpress 60x3W RGB PAR">
-          </label>
-          <label>
-            Description
-            <textarea name="description" rows="2" placeholder="Optional notes"></textarea>
-          </label>
-
-          <div class="inline-head">
-            <h3>Channels</h3>
-            <button type="button" id="add-channel-btn" class="btn ghost">Add Channel</button>
-          </div>
-
-          <div class="inline-controls">
-            <input type="number" id="quick-channel-count" min="1" max="64" value="13" aria-label="Channel count">
-            <button type="button" id="generate-channels-btn" class="btn ghost">Generate Blank Channels</button>
-          </div>
-
-          <div id="channel-editor-list" class="channel-editor-list"></div>
-
-          <button type="submit" class="btn primary">Save Template</button>
-        </form>
-      </article>
-
+    <section class="view-page" data-view-page="patch">
       <article class="panel glass">
         <div class="panel-head">
           <h2>Patch Fixture</h2>
@@ -138,7 +135,49 @@
           <div id="template-list" class="template-list"></div>
         </div>
       </article>
+    </section>
 
+    <section class="view-page" data-view-page="templates">
+      <article class="panel glass">
+        <div class="panel-head">
+          <h2>Template Builder</h2>
+          <p>Create custom fixtures and define channel ranges.</p>
+        </div>
+
+        <div class="inline-controls template-actions">
+          <button id="template-export-btn" class="btn ghost" type="button">Export Templates</button>
+          <button id="template-import-btn" class="btn ghost" type="button">Import Templates</button>
+          <input type="file" id="template-import-file" accept="application/json" hidden>
+        </div>
+
+        <form id="template-form" class="stack-form">
+          <label>
+            Template Name
+            <input type="text" name="name" required placeholder="AliExpress 60x3W RGB PAR">
+          </label>
+          <label>
+            Description
+            <textarea name="description" rows="2" placeholder="Optional notes"></textarea>
+          </label>
+
+          <div class="inline-head">
+            <h3>Channels</h3>
+            <button type="button" id="add-channel-btn" class="btn ghost">Add Channel</button>
+          </div>
+
+          <div class="inline-controls">
+            <input type="number" id="quick-channel-count" min="1" max="64" value="13" aria-label="Channel count">
+            <button type="button" id="generate-channels-btn" class="btn ghost">Generate Blank Channels</button>
+          </div>
+
+          <div id="channel-editor-list" class="channel-editor-list"></div>
+
+          <button type="submit" class="btn primary">Save Template</button>
+        </form>
+      </article>
+    </section>
+
+    <section class="view-page" data-view-page="groups">
       <article class="panel glass">
         <div class="panel-head">
           <h2>Groups</h2>
@@ -155,7 +194,9 @@
 
         <div id="group-board" class="group-board"></div>
       </article>
+    </section>
 
+    <section class="view-page" data-view-page="learn">
       <article class="panel glass">
         <div class="panel-head">
           <h2>Learn Lab</h2>
@@ -280,14 +321,6 @@
           <button type="button" id="learn-add-range" class="btn primary">Add Range To Channel</button>
         </div>
       </article>
-    </section>
-
-    <section class="panel glass">
-      <div class="panel-head">
-        <h2>Live Control</h2>
-        <p>Knobs per fixture channel. Range chips jump to meaningful values with icons.</p>
-      </div>
-      <div id="fixture-board" class="fixture-board"></div>
     </section>
 
     <div id="toast" class="toast" aria-live="polite"></div>

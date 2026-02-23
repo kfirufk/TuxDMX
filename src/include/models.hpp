@@ -66,6 +66,12 @@ struct AudioMetrics {
   bool beat = false;
 };
 
+struct AudioInputDevice {
+  int id = -1;
+  std::string name;
+  bool isDefault = false;
+};
+
 struct ChannelPatch {
   int universe = 1;
   int absoluteAddress = 1;

@@ -26,6 +26,7 @@ class DmxEngine {
   void setChannel(int universe, int absoluteAddress, int value);
   void replaceUniverse(int universe, const std::array<std::uint8_t, 512>& data);
   void clearUniverse(int universe);
+  void ensureUniverse(int universe);
   void setOutputUniverse(int universe);
   int outputUniverse() const;
   std::vector<int> knownUniverses() const;

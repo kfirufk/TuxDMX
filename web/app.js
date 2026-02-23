@@ -4,6 +4,8 @@ const state = {
   groups: [],
   dmx: null,
   audio: null,
+  activeView: 'live',
+  controlMode: 'slider',
   refreshTimer: null,
   toastTimer: null,
   learnSendTimer: null,
@@ -18,9 +20,20 @@ const els = {
   audioEnergy: document.getElementById('audio-energy'),
   audioBass: document.getElementById('audio-bass'),
   audioBpm: document.getElementById('audio-bpm'),
+  audioInputSelect: document.getElementById('audio-input-select'),
+  applyAudioInputBtn: document.getElementById('apply-audio-input-btn'),
+  audioInputLabel: document.getElementById('audio-input-label'),
   outputUniverseSelect: document.getElementById('output-universe-select'),
   outputUniverseLabel: document.getElementById('output-universe-label'),
+  newUniverseNumber: document.getElementById('new-universe-number'),
+  createUniverseBtn: document.getElementById('create-universe-btn'),
+  universeHelp: document.getElementById('universe-help'),
   applyUniverseBtn: document.getElementById('apply-universe-btn'),
+  controlModeSlider: document.getElementById('control-mode-slider'),
+  controlModeKnob: document.getElementById('control-mode-knob'),
+  controlModeButtons: [...document.querySelectorAll('[data-control-mode]')],
+  viewTabs: [...document.querySelectorAll('[data-view-tab]')],
+  viewPages: [...document.querySelectorAll('[data-view-page]')],
   refreshBtn: document.getElementById('refresh-btn'),
   audioToggle: document.getElementById('audio-toggle'),
   templateForm: document.getElementById('template-form'),
@@ -136,6 +149,66 @@ function iconForRangeLabel(label) {
 function iconBadge(kindOrLabel, byLabel = false) {
   const svg = byLabel ? iconForRangeLabel(kindOrLabel) : iconForKind(kindOrLabel);
   return `<span class="icon-badge" aria-hidden="true">${svg}</span>`;
+}
+
+function setActiveView(view, { persist = true } = {}) {
+  const nextView = ['live', 'patch', 'templates', 'groups', 'learn'].includes(view) ? view : 'live';
+  state.activeView = nextView;
+
+  els.viewTabs.forEach((tab) => {
+    const active = tab.dataset.viewTab === nextView;
+    tab.classList.toggle('is-active', active);
+    tab.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+
+  els.viewPages.forEach((page) => {
+    page.classList.toggle('is-active', page.dataset.viewPage === nextView);
+  });
+
+  if (persist) {
+    try {
+      window.localStorage.setItem('tuxdmx.activeView', nextView);
+    } catch {
+      // Ignore storage write failures.
+    }
+  }
+}
+
+function setControlMode(mode, { persist = true, rerender = true } = {}) {
+  const nextMode = mode === 'knob' ? 'knob' : 'slider';
+  state.controlMode = nextMode;
+
+  els.controlModeButtons.forEach((button) => {
+    const active = button.dataset.controlMode === nextMode;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+
+  if (persist) {
+    try {
+      window.localStorage.setItem('tuxdmx.controlMode', nextMode);
+    } catch {
+      // Ignore storage write failures.
+    }
+  }
+
+  if (rerender) {
+    renderFixtures(state.fixtures || []);
+    renderGroups(state.groups || []);
+  }
+}
+
+function initializeUiPreferences() {
+  let savedView = 'live';
+  let savedMode = 'slider';
+  try {
+    savedView = window.localStorage.getItem('tuxdmx.activeView') || 'live';
+    savedMode = window.localStorage.getItem('tuxdmx.controlMode') || 'slider';
+  } catch {
+    // Ignore storage access issues; defaults are good fallback values.
+  }
+  setActiveView(savedView, { persist: false });
+  setControlMode(savedMode, { persist: false, rerender: false });
 }
 
 function makeChannelRow(prefill = {}) {
@@ -377,6 +450,43 @@ function renderStatus(dmx, audio) {
   els.audioToggle.classList.toggle('primary', audio.reactiveMode);
   els.audioToggle.classList.toggle('accent', !audio.reactiveMode);
 
+  const inputDevices = Array.isArray(audio.inputDevices) ? audio.inputDevices : [];
+  const defaultInputDeviceId = Number(audio.defaultInputDeviceId ?? -1);
+  const selectedInputDeviceId = Number(audio.selectedInputDeviceId ?? -1);
+  const activeInputDeviceId = Number(audio.activeInputDeviceId ?? -2);
+  const deviceById = new Map(inputDevices.map((device) => [Number(device.id), device]));
+  const defaultDeviceName = deviceById.get(defaultInputDeviceId)?.name || 'None';
+
+  els.audioInputSelect.innerHTML = '';
+
+  const defaultOption = document.createElement('option');
+  defaultOption.value = '-1';
+  defaultOption.textContent = `Default Input (${defaultDeviceName})`;
+  els.audioInputSelect.appendChild(defaultOption);
+
+  inputDevices.forEach((device) => {
+    const option = document.createElement('option');
+    option.value = String(device.id);
+    option.textContent = `${device.name}${device.isDefault ? ' • default' : ''}`;
+    els.audioInputSelect.appendChild(option);
+  });
+
+  const hasSelectedOption =
+    selectedInputDeviceId === -1 || inputDevices.some((device) => Number(device.id) === selectedInputDeviceId);
+  els.audioInputSelect.value = String(hasSelectedOption ? selectedInputDeviceId : -1);
+
+  const selectedLabel = selectedInputDeviceId === -1
+    ? `Default (${defaultDeviceName})`
+    : (deviceById.get(selectedInputDeviceId)?.name || `Device ${selectedInputDeviceId}`);
+  const activeLabel = activeInputDeviceId >= 0
+    ? (deviceById.get(activeInputDeviceId)?.name || `Device ${activeInputDeviceId}`)
+    : 'Simulated fallback';
+  els.audioInputLabel.textContent = `Selected: ${selectedLabel} • Active: ${activeLabel}`;
+
+  const canSelectInput = inputDevices.length > 0;
+  els.audioInputSelect.disabled = !canSelectInput;
+  els.applyAudioInputBtn.disabled = !canSelectInput;
+
   const known = [...new Set((dmx.knownUniverses || [1]).map((u) => Number(u)).filter((u) => u > 0))].sort((a, b) => a - b);
   const current = Number(dmx.outputUniverse || 1);
   if (!known.includes(current)) known.push(current);
@@ -391,6 +501,14 @@ function renderStatus(dmx, audio) {
   });
   els.outputUniverseSelect.value = String(before || current);
   els.outputUniverseLabel.textContent = `Current: U${current}`;
+  els.universeHelp.textContent =
+    'Each universe is a separate 512-channel DMX space. Create one, patch fixtures to it, then switch output.';
+
+  const nextUniverseDefault = (known.length ? Math.max(...known) : 1) + 1;
+  const currentInput = Number(els.newUniverseNumber.value || 0);
+  if (currentInput < 1) {
+    els.newUniverseNumber.value = String(nextUniverseDefault);
+  }
 }
 
 function escapeHtml(text = '') {
@@ -402,11 +520,59 @@ function escapeHtml(text = '') {
     .replaceAll("'", '&#039;');
 }
 
+function createSlider(initialValue, onChange) {
+  let value = Math.max(0, Math.min(255, Number(initialValue || 0)));
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'control-widget slider-widget';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.className = 'channel-slider';
+  slider.min = '0';
+  slider.max = '255';
+  slider.step = '1';
+
+  const valueEl = document.createElement('div');
+  valueEl.className = 'slider-value';
+
+  function applyValue(next, send = false) {
+    value = Math.max(0, Math.min(255, Math.round(next)));
+    slider.value = String(value);
+    valueEl.textContent = String(value);
+    if (send) {
+      onChange(value);
+    }
+  }
+
+  slider.addEventListener('input', () => {
+    applyValue(slider.value, true);
+  });
+
+  slider.addEventListener('change', () => {
+    onChange(value);
+  });
+
+  applyValue(value, false);
+  wrapper.append(slider, valueEl);
+
+  return {
+    element: wrapper,
+    setValue(next) {
+      applyValue(next, false);
+    },
+    getValue() {
+      return value;
+    },
+  };
+}
+
 function createKnob(initialValue, onChange) {
   let value = Math.max(0, Math.min(255, Number(initialValue || 0)));
   let raf = null;
 
   const wrapper = document.createElement('div');
+  wrapper.className = 'control-widget knob-widget';
   const knob = document.createElement('div');
   knob.className = 'knob';
   knob.setAttribute('role', 'slider');
@@ -503,6 +669,12 @@ function createKnob(initialValue, onChange) {
   };
 }
 
+function createChannelControl(initialValue, onChange) {
+  return state.controlMode === 'knob'
+    ? createKnob(initialValue, onChange)
+    : createSlider(initialValue, onChange);
+}
+
 function renderFixtures(fixtures) {
   state.fixtures = fixtures;
   els.fixtureBoard.innerHTML = '';
@@ -571,7 +743,7 @@ function renderFixtures(fixtures) {
       sub.textContent = `CH${channel.channelIndex}`;
 
       let sendTimer = null;
-      const knob = createKnob(channel.value, (value) => {
+      const control = createChannelControl(channel.value, (value) => {
         window.clearTimeout(sendTimer);
         sendTimer = window.setTimeout(async () => {
           try {
@@ -596,7 +768,7 @@ function renderFixtures(fixtures) {
         chip.innerHTML = `${iconBadge(range.label, true)}<span>${escapeHtml(range.label)}</span>`;
         chip.addEventListener('click', () => {
           const mid = Math.round((range.startValue + range.endValue) / 2);
-          knob.setValue(mid);
+          control.setValue(mid);
           api(`/api/fixtures/${fixture.id}/channels/${channel.channelIndex}`, {
             method: 'POST',
             body: { value: String(mid) },
@@ -605,7 +777,7 @@ function renderFixtures(fixtures) {
         rangeChipWrap.appendChild(chip);
       });
 
-      channelCard.append(titleWrapRow, sub, knob.element);
+      channelCard.append(titleWrapRow, sub, control.element);
       if ((channel.ranges || []).length) {
         channelCard.appendChild(rangeChipWrap);
       }
@@ -747,14 +919,18 @@ function renderGroups(groups) {
           ? Math.round(values.reduce((sum, v) => sum + v, 0) / values.length)
           : 128;
 
-        const knob = createKnob(initialValue, (value) => {
-          api(`/api/groups/${group.id}/kinds/${kind}`, {
-            method: 'POST',
-            body: { value: String(value) },
-          }).catch((err) => showToast(err.message, 'error'));
+        let sendTimer = null;
+        const control = createChannelControl(initialValue, (value) => {
+          window.clearTimeout(sendTimer);
+          sendTimer = window.setTimeout(() => {
+            api(`/api/groups/${group.id}/kinds/${kind}`, {
+              method: 'POST',
+              body: { value: String(value) },
+            }).catch((err) => showToast(err.message, 'error'));
+          }, 40);
         });
 
-        cell.append(titleRow, knob.element);
+        cell.append(titleRow, control.element);
         kindGrid.appendChild(cell);
       });
 
@@ -1103,6 +1279,20 @@ async function toggleReactiveMode() {
   }
 }
 
+async function applyAudioInputDevice() {
+  const deviceId = Number(els.audioInputSelect.value || -1);
+  try {
+    await api('/api/audio/input-device', {
+      method: 'POST',
+      body: { device_id: String(deviceId) },
+    });
+    await loadState({ silent: true });
+    showToast('Audio input selection updated');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
 async function applyOutputUniverse() {
   try {
     const universe = Number(els.outputUniverseSelect.value || 1);
@@ -1112,6 +1302,25 @@ async function applyOutputUniverse() {
     });
     await loadState({ silent: true });
     showToast(`DMX output now routed to Universe ${universe}`);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function createUniverse() {
+  const universe = Number(els.newUniverseNumber.value || 0);
+  if (!Number.isFinite(universe) || universe < 1) {
+    showToast('Universe must be a number >= 1', 'error');
+    return;
+  }
+
+  try {
+    await api('/api/dmx/universes', {
+      method: 'POST',
+      body: { universe: String(universe) },
+    });
+    await loadState({ silent: true });
+    showToast(`Universe ${universe} created`);
   } catch (err) {
     showToast(err.message, 'error');
   }
@@ -1228,7 +1437,28 @@ function installEventListeners() {
 
   els.refreshBtn.addEventListener('click', () => loadState());
   els.audioToggle.addEventListener('click', toggleReactiveMode);
+  els.applyAudioInputBtn.addEventListener('click', applyAudioInputDevice);
   els.applyUniverseBtn.addEventListener('click', applyOutputUniverse);
+  els.createUniverseBtn.addEventListener('click', createUniverse);
+
+  els.newUniverseNumber.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      createUniverse().catch((err) => showToast(err.message, 'error'));
+    }
+  });
+
+  els.viewTabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      setActiveView(tab.dataset.viewTab || 'live');
+    });
+  });
+
+  els.controlModeButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      setControlMode(button.dataset.controlMode || 'slider');
+    });
+  });
 
   els.templateExportBtn.addEventListener('click', exportTemplates);
   els.templateImportBtn.addEventListener('click', () => els.templateImportFile.click());
@@ -1295,6 +1525,7 @@ function installEventListeners() {
 }
 
 async function boot() {
+  initializeUiPreferences();
   installEventListeners();
 
   els.channelEditorList.appendChild(makeChannelRow({

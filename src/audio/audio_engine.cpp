@@ -10,6 +10,13 @@
 
 namespace tuxdmx {
 
+namespace {
+
+constexpr int kUseDefaultInputDevice = -1;
+constexpr int kInactiveInputDevice = -2;
+
+}  // namespace
+
 AudioEngine::AudioEngine() {
   std::random_device rd;
   rng_.seed(rd());
@@ -60,6 +67,49 @@ AudioMetrics AudioEngine::currentMetrics() const {
   return lastMetrics_;
 }
 
+std::vector<AudioInputDevice> AudioEngine::inputDevices() const {
+  std::scoped_lock lock(audioDeviceMutex_);
+  return inputDevices_;
+}
+
+int AudioEngine::defaultInputDeviceId() const {
+  std::scoped_lock lock(audioDeviceMutex_);
+  return defaultInputDeviceId_;
+}
+
+int AudioEngine::selectedInputDeviceId() const {
+  std::scoped_lock lock(audioDeviceMutex_);
+  return selectedInputDeviceId_;
+}
+
+int AudioEngine::activeInputDeviceId() const {
+  std::scoped_lock lock(audioDeviceMutex_);
+  return activeInputDeviceId_;
+}
+
+bool AudioEngine::selectInputDevice(int deviceId, std::string& error) {
+#ifdef TUXDMX_WITH_PORTAUDIO
+  std::scoped_lock lock(audioDeviceMutex_);
+  if (deviceId != kUseDefaultInputDevice && !inputDevices_.empty()) {
+    const bool knownDevice =
+        std::any_of(inputDevices_.begin(), inputDevices_.end(),
+                    [deviceId](const AudioInputDevice& device) { return device.id == deviceId; });
+    if (!knownDevice) {
+      error = "Unknown input device id";
+      return false;
+    }
+  }
+
+  selectedInputDeviceId_ = deviceId;
+  deviceSwitchPending_ = true;
+  return true;
+#else
+  (void)deviceId;
+  error = "PortAudio support is not enabled in this build";
+  return false;
+#endif
+}
+
 #ifdef TUXDMX_WITH_PORTAUDIO
 bool AudioEngine::initPortAudio() {
   if (portAudioReady_) {
@@ -69,21 +119,118 @@ bool AudioEngine::initPortAudio() {
   if (Pa_Initialize() != paNoError) {
     return false;
   }
+  portAudioReady_ = true;
 
-  const PaDeviceIndex inputDevice = Pa_GetDefaultInputDevice();
-  if (inputDevice == paNoDevice) {
-    Pa_Terminate();
+  {
+    std::scoped_lock lock(audioDeviceMutex_);
+    refreshInputDevicesLocked();
+    deviceSwitchPending_ = true;
+  }
+
+  {
+    std::scoped_lock lock(backendMutex_);
+    backendName_ = "portaudio";
+  }
+
+  return true;
+}
+
+void AudioEngine::refreshInputDevicesLocked() {
+  inputDevices_.clear();
+  defaultInputDeviceId_ = kUseDefaultInputDevice;
+
+  if (!portAudioReady_) {
+    return;
+  }
+
+  const PaDeviceIndex defaultInput = Pa_GetDefaultInputDevice();
+  if (defaultInput != paNoDevice) {
+    defaultInputDeviceId_ = static_cast<int>(defaultInput);
+  }
+
+  const PaDeviceIndex count = Pa_GetDeviceCount();
+  if (count <= 0) {
+    return;
+  }
+
+  for (PaDeviceIndex idx = 0; idx < count; ++idx) {
+    const PaDeviceInfo* info = Pa_GetDeviceInfo(idx);
+    if (info == nullptr || info->maxInputChannels < 1) {
+      continue;
+    }
+
+    std::string label = info->name != nullptr ? info->name : ("Input " + std::to_string(idx));
+
+    if (info->hostApi >= 0) {
+      const PaHostApiInfo* hostInfo = Pa_GetHostApiInfo(info->hostApi);
+      if (hostInfo != nullptr && hostInfo->name != nullptr && std::string(hostInfo->name).size() > 0) {
+        label += " (" + std::string(hostInfo->name) + ")";
+      }
+    }
+
+    AudioInputDevice device;
+    device.id = static_cast<int>(idx);
+    device.name = label;
+    device.isDefault = device.id == defaultInputDeviceId_;
+    inputDevices_.push_back(std::move(device));
+  }
+
+  if (defaultInputDeviceId_ == kUseDefaultInputDevice && !inputDevices_.empty()) {
+    defaultInputDeviceId_ = inputDevices_.front().id;
+    inputDevices_.front().isDefault = true;
+  }
+}
+
+void AudioEngine::closePortAudioStream() {
+  if (!portAudioReady_) {
+    return;
+  }
+
+  PaStream* stream = nullptr;
+  {
+    std::scoped_lock lock(audioDeviceMutex_);
+    stream = static_cast<PaStream*>(stream_);
+    stream_ = nullptr;
+    activeInputDeviceId_ = kInactiveInputDevice;
+  }
+
+  if (stream != nullptr) {
+    if (Pa_IsStreamActive(stream) == 1) {
+      Pa_StopStream(stream);
+    }
+    Pa_CloseStream(stream);
+  }
+}
+
+bool AudioEngine::openPortAudioStreamForSelectedDevice() {
+  if (!portAudioReady_) {
     return false;
   }
 
-  const PaDeviceInfo* info = Pa_GetDeviceInfo(inputDevice);
-  if (info == nullptr) {
-    Pa_Terminate();
+  closePortAudioStream();
+
+  int selectedId = kUseDefaultInputDevice;
+  int defaultId = kUseDefaultInputDevice;
+  {
+    std::scoped_lock lock(audioDeviceMutex_);
+    refreshInputDevicesLocked();
+    selectedId = selectedInputDeviceId_;
+    defaultId = defaultInputDeviceId_;
+  }
+
+  const int resolvedId = selectedId == kUseDefaultInputDevice ? defaultId : selectedId;
+  if (resolvedId < 0) {
+    return false;
+  }
+
+  const PaDeviceIndex deviceIndex = static_cast<PaDeviceIndex>(resolvedId);
+  const PaDeviceInfo* info = Pa_GetDeviceInfo(deviceIndex);
+  if (info == nullptr || info->maxInputChannels < 1) {
     return false;
   }
 
   PaStreamParameters inputParams{};
-  inputParams.device = inputDevice;
+  inputParams.device = deviceIndex;
   inputParams.channelCount = 1;
   inputParams.sampleFormat = paFloat32;
   inputParams.suggestedLatency = info->defaultLowInputLatency;
@@ -92,27 +239,27 @@ bool AudioEngine::initPortAudio() {
   PaStream* stream = nullptr;
   constexpr double kSampleRate = 48000.0;
   constexpr unsigned long kFramesPerBuffer = 256;
-
   const PaError openErr =
       Pa_OpenStream(&stream, &inputParams, nullptr, kSampleRate, kFramesPerBuffer, paNoFlag, nullptr, nullptr);
   if (openErr != paNoError || stream == nullptr) {
-    Pa_Terminate();
     return false;
   }
 
   const PaError startErr = Pa_StartStream(stream);
   if (startErr != paNoError) {
     Pa_CloseStream(stream);
-    Pa_Terminate();
     return false;
   }
 
-  stream_ = stream;
-  portAudioReady_ = true;
+  {
+    std::scoped_lock lock(audioDeviceMutex_);
+    stream_ = stream;
+    activeInputDeviceId_ = resolvedId;
+  }
 
   {
     std::scoped_lock lock(backendMutex_);
-    backendName_ = std::string("portaudio/") + info->name;
+    backendName_ = std::string("portaudio/") + (info->name != nullptr ? info->name : "input");
   }
 
   return true;
@@ -123,15 +270,15 @@ void AudioEngine::shutdownPortAudio() {
     return;
   }
 
-  PaStream* stream = static_cast<PaStream*>(stream_);
-  if (stream != nullptr) {
-    if (Pa_IsStreamActive(stream) == 1) {
-      Pa_StopStream(stream);
-    }
-    Pa_CloseStream(stream);
+  closePortAudioStream();
+
+  {
+    std::scoped_lock lock(audioDeviceMutex_);
+    inputDevices_.clear();
+    defaultInputDeviceId_ = kUseDefaultInputDevice;
+    activeInputDeviceId_ = kInactiveInputDevice;
   }
 
-  stream_ = nullptr;
   portAudioReady_ = false;
   Pa_Terminate();
 }
@@ -213,6 +360,9 @@ void AudioEngine::loop() {
   if (!initPortAudio()) {
     std::scoped_lock lock(backendMutex_);
     backendName_ = "simulated-energy";
+  } else if (!openPortAudioStreamForSelectedDevice()) {
+    std::scoped_lock lock(backendMutex_);
+    backendName_ = "simulated-energy (no input device)";
   }
 #endif
 
@@ -220,22 +370,48 @@ void AudioEngine::loop() {
   std::array<float, kFramesPerTick> monoBuffer{};
 
   float simulationPhase = 0.0F;
+  auto lastDeviceRefresh = std::chrono::steady_clock::time_point{};
 
   while (running_.load()) {
     bool hadAudioInput = false;
 
 #ifdef TUXDMX_WITH_PORTAUDIO
     if (portAudioReady_) {
-      PaStream* stream = static_cast<PaStream*>(stream_);
+      const auto now = std::chrono::steady_clock::now();
+      if (lastDeviceRefresh.time_since_epoch().count() == 0 ||
+          now - lastDeviceRefresh > std::chrono::seconds(2)) {
+        std::scoped_lock lock(audioDeviceMutex_);
+        refreshInputDevicesLocked();
+        lastDeviceRefresh = now;
+      }
+
+      bool shouldSwitch = false;
+      {
+        std::scoped_lock lock(audioDeviceMutex_);
+        shouldSwitch = deviceSwitchPending_;
+        deviceSwitchPending_ = false;
+      }
+
+      if (shouldSwitch && !openPortAudioStreamForSelectedDevice()) {
+        std::scoped_lock lock(backendMutex_);
+        backendName_ = "simulated-energy (selected input unavailable)";
+      }
+
+      PaStream* stream = nullptr;
+      {
+        std::scoped_lock lock(audioDeviceMutex_);
+        stream = static_cast<PaStream*>(stream_);
+      }
+
       if (stream != nullptr) {
         const PaError err = Pa_ReadStream(stream, monoBuffer.data(), kFramesPerTick);
         if (err == paNoError || err == paInputOverflowed) {
           analyzeFrame(monoBuffer.data(), monoBuffer.size());
           hadAudioInput = true;
         } else {
-          shutdownPortAudio();
+          closePortAudioStream();
           std::scoped_lock lock(backendMutex_);
-          backendName_ = "simulated-energy";
+          backendName_ = "simulated-energy (stream read error)";
         }
       }
     }

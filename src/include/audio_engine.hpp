@@ -7,6 +7,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "models.hpp"
 
@@ -31,6 +32,11 @@ class AudioEngine {
   void setTickCallback(TickCallback callback);
   std::string backendName() const;
   AudioMetrics currentMetrics() const;
+  std::vector<AudioInputDevice> inputDevices() const;
+  int defaultInputDeviceId() const;
+  int selectedInputDeviceId() const;
+  int activeInputDeviceId() const;
+  bool selectInputDevice(int deviceId, std::string& error);
 
  private:
   void loop();
@@ -38,6 +44,9 @@ class AudioEngine {
 
 #ifdef TUXDMX_WITH_PORTAUDIO
   bool initPortAudio();
+  bool openPortAudioStreamForSelectedDevice();
+  void closePortAudioStream();
+  void refreshInputDevicesLocked();
   void shutdownPortAudio();
 #endif
 
@@ -52,6 +61,12 @@ class AudioEngine {
 
   mutable std::mutex backendMutex_;
   std::string backendName_ = "simulated-energy";
+  mutable std::mutex audioDeviceMutex_;
+  std::vector<AudioInputDevice> inputDevices_;
+  int defaultInputDeviceId_ = -1;
+  int selectedInputDeviceId_ = -1;
+  int activeInputDeviceId_ = -2;
+  bool deviceSwitchPending_ = false;
 
   std::thread worker_;
 

@@ -21,11 +21,18 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
 - Multi-universe engine model:
   - stores/updates multiple universes
   - routes selected output universe to DMX USB Pro
+  - explicit create-universe API/UI for quick setup
 - Live control UI:
-  - fixture cards with per-channel knobs
+  - fixture cards with per-channel sliders (default)
+  - optional knob mode toggle in toolbar
   - value-range chips
   - icon mapping for channel types and mode/range labels
   - fast blank-channel generator for unknown fixtures (manual missing workflow)
+  - clean view menu (Live / Patch / Templates / Groups / Learn)
+- Audio input routing UI:
+  - lists available input devices
+  - shows default/selected/active input
+  - allows switching microphone source live
 - Group UI + API:
   - create/delete groups
   - assign fixtures to groups
@@ -112,7 +119,9 @@ ctest --preset test-debug
 - `POST /api/fixtures` patch fixture
 - `POST /api/fixtures/{id}/channels/{channel}` set channel value
 - `POST /api/dmx/output-universe` set active output universe
+- `POST /api/dmx/universes` create/ensure a universe exists
 - `POST /api/audio/reactive` toggle music-reactive mode
+- `POST /api/audio/input-device` select active audio input device (`-1` = default)
 - `POST /api/groups` create group
 - `POST /api/groups/{id}/fixtures` set group members
 - `POST /api/groups/{id}/kinds/{kind}` apply value by channel kind
