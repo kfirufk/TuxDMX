@@ -695,9 +695,26 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
     // Increase/decrease the blend factors to get snappier or smoother response.
     state.smoothedEnergy = state.smoothedEnergy * 0.82F + metrics.energy * 0.18F;
 
-    // Hue speed follows tempo and beat energy so color movement feels synced.
-    state.hue += 0.8F + (metrics.bpm / 90.0F) + (state.smoothedEnergy * 2.4F);
-    state.hue += hueJitter(reactiveRng_);
+    // Ignore tiny beat spikes in near-silence so moving heads do not drift when the room is quiet.
+    const bool strongBeat =
+        metrics.beat && (metrics.energy > 0.10F || metrics.bass > 0.12F || metrics.treble > 0.12F);
+    const bool nearSilence = !strongBeat && metrics.energy < 0.08F && metrics.bass < 0.10F && metrics.treble < 0.10F;
+    if (nearSilence) {
+      state.smoothedEnergy *= 0.75F;
+    }
+
+    const float activity = std::clamp((state.smoothedEnergy - 0.08F) / 0.92F, 0.0F, 1.0F);
+
+    // Hue motion follows meaningful audio activity. When quiet, it barely changes.
+    float hueStep = 0.06F + (activity * 2.4F);
+    if (strongBeat) {
+      hueStep += 0.9F;
+    }
+    if (metrics.bpm > 20.0F && activity > 0.05F) {
+      hueStep += metrics.bpm / 140.0F;
+    }
+    state.hue += hueStep;
+    state.hue += hueJitter(reactiveRng_) * (0.12F + (activity * 0.88F));
     if (state.hue < 0.0F) {
       state.hue += 360.0F;
     }
@@ -706,7 +723,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
     }
 
     const float colorValue = std::clamp(0.26F + state.smoothedEnergy * 0.74F, 0.0F, 1.0F);
-    const auto rgb = hsvToRgb(state.hue + (metrics.beat ? 12.0F : 0.0F), 0.9F, colorValue);
+    const auto rgb = hsvToRgb(state.hue + (strongBeat ? 12.0F : 0.0F), 0.9F, colorValue);
 
     std::vector<ChannelPatch> patches;
 
@@ -722,22 +739,31 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
 
       if (kind == "dimmer") {
         // Master dimmer combines overall loudness and bass accents.
-        const float dimmer = 30.0F + (state.smoothedEnergy * 170.0F) + (metrics.bass * 46.0F) + (metrics.beat ? 18.0F : 0.0F);
+        const float dimmer =
+            30.0F + (state.smoothedEnergy * 170.0F) + (metrics.bass * 46.0F) + (strongBeat ? 18.0F : 0.0F);
         nextValue = clampDmx(static_cast<int>(std::round(dimmer)));
       } else if (kind == "pan") {
-        // Pan runs wide musical sweeps. Amplitude grows with energy.
-        const float amplitude = 45.0F + (state.smoothedEnergy * 78.0F);
-        const float pan = 128.0F + std::sin(phase * 1.13F) * amplitude;
-        nextValue = clampDmx(static_cast<int>(std::round(pan)));
+        // Pan stays parked at center when audio activity is very low.
+        if (activity < 0.03F) {
+          nextValue = 128;
+        } else {
+          const float amplitude = 16.0F + (activity * 106.0F);
+          const float pan = 128.0F + std::sin(phase * 1.13F) * amplitude;
+          nextValue = clampDmx(static_cast<int>(std::round(pan)));
+        }
       } else if (kind == "tilt") {
-        // Tilt has a narrower counter motion to keep movement readable.
-        const float amplitude = 22.0F + (state.smoothedEnergy * 56.0F);
-        const float tilt = 128.0F + std::cos((phase * 0.93F) + 0.8F) * amplitude;
-        nextValue = clampDmx(static_cast<int>(std::round(tilt)));
+        // Tilt follows pan behavior and remains still in near-silence.
+        if (activity < 0.03F) {
+          nextValue = 128;
+        } else {
+          const float amplitude = 9.0F + (activity * 66.0F);
+          const float tilt = 128.0F + std::cos((phase * 0.93F) + 0.8F) * amplitude;
+          nextValue = clampDmx(static_cast<int>(std::round(tilt)));
+        }
       } else if (kind == "pan_speed") {
         // This channel is documented as 0=fast, 255=slow, so we invert energy.
         // High music energy => lower DMX value => faster movement.
-        float speedValue = 230.0F - (state.smoothedEnergy * 185.0F) - (metrics.beat ? 16.0F : 0.0F);
+        float speedValue = 240.0F - (activity * 200.0F) - (strongBeat ? 16.0F : 0.0F);
         speedValue = std::clamp(speedValue, 15.0F, 255.0F);
         nextValue = static_cast<int>(std::round(speedValue));
       } else if (kind == "red") {
@@ -748,7 +774,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         nextValue = rgb[2];
       } else if (kind == "white") {
         // White is used as a sparkle accent on transients/treble.
-        const float white = 8.0F + (metrics.treble * 130.0F) + (metrics.beat ? 70.0F : 0.0F);
+        const float white = 8.0F + (metrics.treble * 130.0F) + (strongBeat ? 70.0F : 0.0F);
         nextValue = clampDmx(static_cast<int>(std::round(white)));
       } else if (kind == "speed") {
         // Effect speed scales with measured BPM and overall energy.
@@ -756,7 +782,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         nextValue = clampDmx(static_cast<int>(std::round(speed)));
       } else if (kind == "strobe") {
         std::optional<ChannelRange> targetRange;
-        if (metrics.beat || metrics.energy > 0.72F) {
+        if (strongBeat || metrics.energy > 0.72F) {
           targetRange = pickRangeByKeywords(channel.ranges, {"strobe", "flash", "flicker"});
         } else {
           targetRange = pickRangeByKeywords(channel.ranges, {"no", "off", "manual", "static"});
@@ -765,7 +791,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         if (targetRange.has_value()) {
           nextValue = midpoint(*targetRange);
         } else {
-          nextValue = metrics.beat ? 160 : 0;
+          nextValue = strongBeat ? 160 : 0;
         }
       } else if (kind == "mode" || kind == "strip_effect" || kind == "effect") {
         std::vector<std::string> desired;
@@ -783,7 +809,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
           // Tweak keyword sets below to map your own fixture vocabulary.
           if (metrics.bass > 0.75F) {
             desired = {"voice", "sound", "music"};
-          } else if (metrics.beat && metrics.energy > 0.65F) {
+          } else if (strongBeat && metrics.energy > 0.65F) {
             desired = {"jump", "flash"};
           } else if (metrics.energy > 0.50F) {
             desired = {"pulse", "variable"};
@@ -797,7 +823,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         auto range = pickRangeByKeywords(channel.ranges, desired);
 
         if (!range.has_value() && !channel.ranges.empty()) {
-          if (metrics.beat) {
+          if (strongBeat) {
             state.modeCursor = (state.modeCursor + 1) % channel.ranges.size();
           }
           range = channel.ranges[state.modeCursor % channel.ranges.size()];
@@ -835,7 +861,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         std::vector<std::string> desired;
 
         // Macro logic intentionally avoids reset ranges during autoplay.
-        if (metrics.bass > 0.72F) {
+        if (strongBeat && metrics.bass > 0.72F) {
           desired = {"voice", "sound", "audio"};
         } else if (state.smoothedEnergy > 0.38F) {
           desired = {"random", "walk"};
@@ -1458,6 +1484,32 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     std::ostringstream ss;
     ss << "{\"ok\":true,\"applied\":" << applied << '}';
     return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/dmx/blackout") {
+    // Panic blackout: stop reactive playback, persist fixture values to zero, and clear every known universe frame.
+    audio_.setReactiveMode(false);
+    persistBlackoutToDatabase();
+
+    std::set<int> universes;
+    for (int universe : dmx_.knownUniverses()) {
+      if (universe >= 1) {
+        universes.insert(universe);
+      }
+    }
+    universes.insert(dmx_.outputUniverse());
+
+    for (int universe : universes) {
+      dmx_.clearUniverse(universe);
+    }
+
+    {
+      std::scoped_lock lock(reactiveMutex_);
+      reactiveStates_.clear();
+      lastReactiveApply_ = {};
+    }
+
+    return jsonOk("{\"ok\":true,\"reactiveMode\":false}");
   }
 
   if (request.method == "POST" && request.path == "/api/dmx/output-universe") {

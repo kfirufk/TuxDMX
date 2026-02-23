@@ -32,6 +32,7 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
     - blackout
     - rotate for pan/tilt fixtures
     - strobe hit
+  - one-click panic blackout button (forces zero DMX and disables music-reactive mode)
   - per-effect intensity controls (all-on / blackout / rotate / strobe)
   - adjustable fade seconds (decimal support) and intensity controls are MIDI-mappable
   - value-range chips
@@ -59,6 +60,7 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
   - adaptive energy + bass/treble + beat + BPM estimation
   - fallback simulated analyzer when PortAudio is unavailable
   - reactive playback maps to channel kinds and labeled ranges with documented formulas in code
+  - quiet-room movement guard for pan/tilt fixtures to prevent random drift in near-silence
 
 ## Build
 
@@ -134,6 +136,7 @@ ctest --preset test-debug
 - `POST /api/dmx/output-universe` set active output universe
 - `POST /api/dmx/universes` create/ensure a universe exists
 - `POST /api/dmx/patches` apply temporary direct DMX patches (`universe:address:value,...`)
+- `POST /api/dmx/blackout` panic blackout (set known universes and fixture channels to zero, reactive off)
 - `POST /api/audio/reactive` toggle music-reactive mode
 - `POST /api/audio/input-device` select active audio input device (`-1` = default)
 - `POST /api/groups` create group

@@ -90,6 +90,7 @@ const els = {
   performanceBlackoutIntensityMidiSlot: document.getElementById('performance-blackout-intensity-midi-slot'),
   performanceBlackoutBtn: document.getElementById('performance-blackout-btn'),
   performanceBlackoutMidiSlot: document.getElementById('performance-blackout-midi-slot'),
+  panicBlackoutBtn: document.getElementById('panic-blackout-btn'),
   performanceRotateIntensity: document.getElementById('performance-rotate-intensity'),
   performanceRotateIntensityMidiSlot: document.getElementById('performance-rotate-intensity-midi-slot'),
   performanceRotateBtn: document.getElementById('performance-rotate-btn'),
@@ -2402,6 +2403,50 @@ async function applyOutputUniverse() {
   }
 }
 
+function releasePerformanceEffectsImmediately() {
+  if (state.performance.rafId) {
+    window.cancelAnimationFrame(state.performance.rafId);
+  }
+
+  Object.values(state.performance.effectByName).forEach((effect) => {
+    effect.holdSources.ui = false;
+    effect.holdSources.midi = false;
+    effect.envelope = 0;
+    effect.snapshot = null;
+    effect.justSettled = false;
+  });
+
+  state.performance.active = false;
+  state.performance.rafId = null;
+  state.performance.lastTickMs = 0;
+  state.performance.pendingPatchPayload = '';
+  state.performance.lastPatchPayload = '';
+  updatePerformanceButtonVisuals();
+}
+
+async function panicBlackout() {
+  try {
+    releasePerformanceEffectsImmediately();
+
+    // Send blackout twice to override any in-flight non-zero patch from a previous frame.
+    await api('/api/dmx/blackout', { method: 'POST' });
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+    await api('/api/dmx/blackout', { method: 'POST' });
+
+    (state.fixtures || []).forEach((fixture) => {
+      (fixture.channels || []).forEach((channel) => {
+        channel.value = 0;
+      });
+    });
+    renderFixtures(state.fixtures || []);
+
+    await loadState({ silent: true });
+    showToast('Panic blackout applied');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
 async function createUniverse() {
   const universe = Number(els.newUniverseNumber.value || 0);
   if (!Number.isFinite(universe) || universe < 1) {
@@ -2535,6 +2580,11 @@ function installEventListeners() {
   els.applyAudioInputBtn.addEventListener('click', applyAudioInputDevice);
   els.applyUniverseBtn.addEventListener('click', applyOutputUniverse);
   els.createUniverseBtn.addEventListener('click', createUniverse);
+  if (els.panicBlackoutBtn) {
+    els.panicBlackoutBtn.addEventListener('click', () => {
+      panicBlackout().catch((err) => showToast(err.message, 'error'));
+    });
+  }
   els.audioReactiveMidiLearn.addEventListener('click', () => {
     startMidiLearn(MIDI_REACTIVE_CONTROL_ID, 'Music Reactive');
   });
