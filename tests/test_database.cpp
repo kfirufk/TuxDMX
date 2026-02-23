@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <iostream>
@@ -13,9 +14,38 @@ int main() {
   std::string error;
 
   assert(db.initialize(error));
-  assert(db.seedAliExpressRgbPar(error));
+  const int legacyMiraTemplateId = db.createTemplate("Mira Dye", "Legacy D layout for migration test", error);
+  assert(legacyMiraTemplateId > 0);
+  const int legacyMiraChannel = db.addTemplateChannel(legacyMiraTemplateId, 1, "Legacy D Dimmer", "dimmer", 64, error);
+  assert(legacyMiraChannel > 0);
+  const int legacyMiraRange = db.addChannelRange(legacyMiraChannel, 0, 255, "Legacy D range", error);
+  assert(legacyMiraRange > 0);
+
+  assert(db.seedMiraDye(error));
+  assert(error.empty());
 
   auto templates = db.listTemplates(error);
+  assert(error.empty());
+
+  const auto miraIt =
+      std::find_if(templates.begin(), templates.end(), [](const auto& t) { return t.name == "Mira Dye"; });
+  assert(miraIt != templates.end());
+  assert(miraIt->footprintChannels == 13);
+  assert(miraIt->channels.size() == 13);
+  assert(miraIt->channels[0].name == "X axle");
+  assert(miraIt->channels[0].kind == "pan");
+  assert(miraIt->channels[12].name == "Macro function controls");
+
+  const auto legacyIt = std::find_if(templates.begin(), templates.end(),
+                                     [](const auto& t) { return t.name == "Mira Dye (D Mode Legacy)"; });
+  assert(legacyIt != templates.end());
+  assert(!legacyIt->channels.empty());
+  assert(legacyIt->channels[0].name == "Legacy D Dimmer");
+  assert(legacyIt->channels[0].kind == "dimmer");
+
+  assert(db.seedAliExpressRgbPar(error));
+
+  templates = db.listTemplates(error);
   assert(error.empty());
   assert(!templates.empty());
 

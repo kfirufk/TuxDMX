@@ -13,7 +13,8 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
   - fixture groups
 - Startup seed templates:
   - **AliExpress 60x3W RGB PAR**
-  - **Mira Dye**
+  - **Mira Dye** (A-mode 13ch layout)
+  - automatic one-time migration: if an older `Mira Dye` layout is detected, it is preserved as **Mira Dye (D Mode Legacy)** and `Mira Dye` is updated to A-mode
 - ENTTEC DMX USB Pro discovery and status reporting:
   - serial-port scan
   - serial probe (`0x7E 0x0A 0x00 0x00 0xE7`)

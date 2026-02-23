@@ -50,6 +50,285 @@ std::string columnText(sqlite3_stmt* stmt, int col) {
   return text == nullptr ? "" : std::string(text);
 }
 
+struct SeedRange {
+  int startValue = 0;
+  int endValue = 0;
+  const char* label = "";
+};
+
+struct SeedChannel {
+  int idx = 1;
+  const char* name = "";
+  const char* kind = "generic";
+  int defaultValue = 0;
+  std::vector<SeedRange> ranges;
+};
+
+int findTemplateIdByName(sqlite3* db, const char* name, std::string& error) {
+  Statement stmt;
+  if (!prepare(db, "SELECT id FROM fixture_templates WHERE name = ?;", stmt, error)) {
+    return 0;
+  }
+  sqlite3_bind_text(stmt.stmt, 1, name, -1, SQLITE_TRANSIENT);
+  if (sqlite3_step(stmt.stmt) == SQLITE_ROW) {
+    return columnInt(stmt.stmt, 0);
+  }
+  return 0;
+}
+
+bool updateTemplateMetadata(sqlite3* db, int templateId, const std::string& description, int footprint,
+                            std::string& error) {
+  Statement stmt;
+  if (!prepare(db, "UPDATE fixture_templates SET description = ?, footprint_channels = ? WHERE id = ?;", stmt, error)) {
+    return false;
+  }
+  sqlite3_bind_text(stmt.stmt, 1, description.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt.stmt, 2, footprint);
+  sqlite3_bind_int(stmt.stmt, 3, templateId);
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db);
+    return false;
+  }
+  return true;
+}
+
+bool clearTemplateChannels(sqlite3* db, int templateId, std::string& error) {
+  Statement stmt;
+  if (!prepare(db, "DELETE FROM template_channels WHERE template_id = ?;", stmt, error)) {
+    return false;
+  }
+  sqlite3_bind_int(stmt.stmt, 1, templateId);
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db);
+    return false;
+  }
+  return true;
+}
+
+bool insertTemplateChannels(sqlite3* db, int templateId, const std::vector<SeedChannel>& channels, std::string& error) {
+  Statement channelStmt;
+  if (!prepare(db,
+               "INSERT INTO template_channels(template_id, channel_index, name, kind, default_value) VALUES(?, ?, ?, ?, ?);",
+               channelStmt, error)) {
+    return false;
+  }
+
+  Statement rangeStmt;
+  if (!prepare(db, "INSERT INTO template_channel_ranges(channel_id, start_value, end_value, label) VALUES(?, ?, ?, ?);",
+               rangeStmt, error)) {
+    return false;
+  }
+
+  int maxChannel = 0;
+  for (const auto& c : channels) {
+    sqlite3_reset(channelStmt.stmt);
+    sqlite3_clear_bindings(channelStmt.stmt);
+    sqlite3_bind_int(channelStmt.stmt, 1, templateId);
+    sqlite3_bind_int(channelStmt.stmt, 2, c.idx);
+    sqlite3_bind_text(channelStmt.stmt, 3, c.name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(channelStmt.stmt, 4, c.kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(channelStmt.stmt, 5, clampDmx(c.defaultValue));
+    if (sqlite3_step(channelStmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db);
+      return false;
+    }
+
+    maxChannel = std::max(maxChannel, c.idx);
+    const int channelId = static_cast<int>(sqlite3_last_insert_rowid(db));
+    for (const auto& r : c.ranges) {
+      sqlite3_reset(rangeStmt.stmt);
+      sqlite3_clear_bindings(rangeStmt.stmt);
+      sqlite3_bind_int(rangeStmt.stmt, 1, channelId);
+      sqlite3_bind_int(rangeStmt.stmt, 2, clampDmx(r.startValue));
+      sqlite3_bind_int(rangeStmt.stmt, 3, clampDmx(r.endValue));
+      sqlite3_bind_text(rangeStmt.stmt, 4, r.label, -1, SQLITE_TRANSIENT);
+      if (sqlite3_step(rangeStmt.stmt) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db);
+        return false;
+      }
+    }
+  }
+
+  Statement footprintStmt;
+  if (!prepare(db, "UPDATE fixture_templates SET footprint_channels = ? WHERE id = ?;", footprintStmt, error)) {
+    return false;
+  }
+  sqlite3_bind_int(footprintStmt.stmt, 1, maxChannel);
+  sqlite3_bind_int(footprintStmt.stmt, 2, templateId);
+  if (sqlite3_step(footprintStmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db);
+    return false;
+  }
+
+  return true;
+}
+
+bool templateChannelsMatch(sqlite3* db, int templateId, const std::vector<SeedChannel>& channels, std::string& error) {
+  Statement channelStmt;
+  if (!prepare(db,
+               "SELECT id, channel_index, name, kind, default_value FROM template_channels "
+               "WHERE template_id = ? ORDER BY channel_index;",
+               channelStmt, error)) {
+    return false;
+  }
+  sqlite3_bind_int(channelStmt.stmt, 1, templateId);
+
+  std::size_t channelCursor = 0;
+  while (sqlite3_step(channelStmt.stmt) == SQLITE_ROW) {
+    if (channelCursor >= channels.size()) {
+      return false;
+    }
+
+    const auto& expected = channels[channelCursor];
+    const int channelId = columnInt(channelStmt.stmt, 0);
+    const int channelIndex = columnInt(channelStmt.stmt, 1);
+    const std::string channelName = columnText(channelStmt.stmt, 2);
+    const std::string channelKind = columnText(channelStmt.stmt, 3);
+    const int channelDefault = columnInt(channelStmt.stmt, 4);
+    if (channelIndex != expected.idx || channelName != expected.name || channelKind != expected.kind
+        || channelDefault != clampDmx(expected.defaultValue)) {
+      return false;
+    }
+
+    Statement rangeStmt;
+    if (!prepare(db,
+                 "SELECT start_value, end_value, label FROM template_channel_ranges WHERE channel_id = ? "
+                 "ORDER BY start_value, end_value, id;",
+                 rangeStmt, error)) {
+      return false;
+    }
+    sqlite3_bind_int(rangeStmt.stmt, 1, channelId);
+
+    std::size_t rangeCursor = 0;
+    while (sqlite3_step(rangeStmt.stmt) == SQLITE_ROW) {
+      if (rangeCursor >= expected.ranges.size()) {
+        return false;
+      }
+
+      const auto& expectedRange = expected.ranges[rangeCursor];
+      const int startValue = columnInt(rangeStmt.stmt, 0);
+      const int endValue = columnInt(rangeStmt.stmt, 1);
+      const std::string label = columnText(rangeStmt.stmt, 2);
+      if (startValue != clampDmx(expectedRange.startValue) || endValue != clampDmx(expectedRange.endValue)
+          || label != expectedRange.label) {
+        return false;
+      }
+      ++rangeCursor;
+    }
+
+    if (rangeCursor != expected.ranges.size()) {
+      return false;
+    }
+
+    ++channelCursor;
+  }
+
+  return channelCursor == channels.size();
+}
+
+bool cloneTemplateDefinition(sqlite3* db, int sourceTemplateId, const char* newName, const char* newDescription,
+                             std::string& error) {
+  Statement sourceStmt;
+  if (!prepare(db, "SELECT footprint_channels FROM fixture_templates WHERE id = ?;", sourceStmt, error)) {
+    return false;
+  }
+  sqlite3_bind_int(sourceStmt.stmt, 1, sourceTemplateId);
+  if (sqlite3_step(sourceStmt.stmt) != SQLITE_ROW) {
+    error = "Source template not found";
+    return false;
+  }
+
+  const int footprint = columnInt(sourceStmt.stmt, 0);
+
+  Statement insertTemplateStmt;
+  if (!prepare(db, "INSERT INTO fixture_templates(name, description, footprint_channels) VALUES(?, ?, ?);",
+               insertTemplateStmt, error)) {
+    return false;
+  }
+  sqlite3_bind_text(insertTemplateStmt.stmt, 1, newName, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(insertTemplateStmt.stmt, 2, newDescription, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(insertTemplateStmt.stmt, 3, footprint);
+  if (sqlite3_step(insertTemplateStmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db);
+    return false;
+  }
+
+  const int targetTemplateId = static_cast<int>(sqlite3_last_insert_rowid(db));
+
+  Statement sourceChannelStmt;
+  if (!prepare(db,
+               "SELECT id, channel_index, name, kind, default_value FROM template_channels "
+               "WHERE template_id = ? ORDER BY channel_index;",
+               sourceChannelStmt, error)) {
+    return false;
+  }
+  sqlite3_bind_int(sourceChannelStmt.stmt, 1, sourceTemplateId);
+
+  Statement insertChannelStmt;
+  if (!prepare(db,
+               "INSERT INTO template_channels(template_id, channel_index, name, kind, default_value) VALUES(?, ?, ?, ?, ?);",
+               insertChannelStmt, error)) {
+    return false;
+  }
+
+  Statement sourceRangeStmt;
+  if (!prepare(db, "SELECT start_value, end_value, label FROM template_channel_ranges WHERE channel_id = ? "
+                   "ORDER BY start_value, end_value, id;",
+               sourceRangeStmt, error)) {
+    return false;
+  }
+
+  Statement insertRangeStmt;
+  if (!prepare(db, "INSERT INTO template_channel_ranges(channel_id, start_value, end_value, label) VALUES(?, ?, ?, ?);",
+               insertRangeStmt, error)) {
+    return false;
+  }
+
+  while (sqlite3_step(sourceChannelStmt.stmt) == SQLITE_ROW) {
+    const int sourceChannelId = columnInt(sourceChannelStmt.stmt, 0);
+    const int channelIndex = columnInt(sourceChannelStmt.stmt, 1);
+    const std::string name = columnText(sourceChannelStmt.stmt, 2);
+    const std::string kind = columnText(sourceChannelStmt.stmt, 3);
+    const int defaultValue = columnInt(sourceChannelStmt.stmt, 4);
+
+    sqlite3_reset(insertChannelStmt.stmt);
+    sqlite3_clear_bindings(insertChannelStmt.stmt);
+    sqlite3_bind_int(insertChannelStmt.stmt, 1, targetTemplateId);
+    sqlite3_bind_int(insertChannelStmt.stmt, 2, channelIndex);
+    sqlite3_bind_text(insertChannelStmt.stmt, 3, name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insertChannelStmt.stmt, 4, kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(insertChannelStmt.stmt, 5, defaultValue);
+    if (sqlite3_step(insertChannelStmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db);
+      return false;
+    }
+
+    const int targetChannelId = static_cast<int>(sqlite3_last_insert_rowid(db));
+
+    sqlite3_reset(sourceRangeStmt.stmt);
+    sqlite3_clear_bindings(sourceRangeStmt.stmt);
+    sqlite3_bind_int(sourceRangeStmt.stmt, 1, sourceChannelId);
+    while (sqlite3_step(sourceRangeStmt.stmt) == SQLITE_ROW) {
+      const int startValue = columnInt(sourceRangeStmt.stmt, 0);
+      const int endValue = columnInt(sourceRangeStmt.stmt, 1);
+      const std::string label = columnText(sourceRangeStmt.stmt, 2);
+
+      sqlite3_reset(insertRangeStmt.stmt);
+      sqlite3_clear_bindings(insertRangeStmt.stmt);
+      sqlite3_bind_int(insertRangeStmt.stmt, 1, targetChannelId);
+      sqlite3_bind_int(insertRangeStmt.stmt, 2, startValue);
+      sqlite3_bind_int(insertRangeStmt.stmt, 3, endValue);
+      sqlite3_bind_text(insertRangeStmt.stmt, 4, label.c_str(), -1, SQLITE_TRANSIENT);
+      if (sqlite3_step(insertRangeStmt.stmt) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db);
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 }  // namespace
 
 Database::Database(std::string dbPath) : dbPath_(std::move(dbPath)) {}
@@ -949,133 +1228,121 @@ bool Database::seedAliExpressRgbPar(std::string& error) {
 bool Database::seedMiraDye(std::string& error) {
   std::scoped_lock lock(mutex_);
 
-  Statement checkStmt;
-  if (!prepare(db_, "SELECT id FROM fixture_templates WHERE name = ?;", checkStmt, error)) {
+  static constexpr const char* kMiraTemplateName = "Mira Dye";
+  static constexpr const char* kMiraLegacyTemplateName = "Mira Dye (D Mode Legacy)";
+  static constexpr const char* kMiraADescription =
+      "Mira Dye A-mode profile (13 channels): pan/tilt, RGBW, strip effects, built-in color effects, and macro.";
+
+  const std::vector<SeedChannel> aModeChannels = {
+      {1, "X axle", "pan", 128, {{0, 255, "0-360 degree rotation"}}},
+      {2, "Y axle", "tilt", 128, {{0, 255, "0-180 degree rotation"}}},
+      {3, "X-axis speed", "pan_speed", 255, {{0, 255, "Speed from fast to slow"}}},
+      {4, "Total light control", "dimmer", 255, {{0, 255, "Linear dimming from dark to light"}}},
+      {5, "Stroboflash", "strobe", 0, {{0, 9, "NF"}, {10, 255, "Flicker from slow to fast"}}},
+      {6, "Stained Red", "red", 0, {{0, 255, "Red linear dimming 0-100%"}}},
+      {7, "Tinted Green", "green", 0, {{0, 255, "Green linear dimming 0-100%"}}},
+      {8, "Dye blue", "blue", 0, {{0, 255, "Blue linear dimming 0-100%"}}},
+      {9, "Stained White", "white", 0, {{0, 255, "White linear dimming 0-100%"}}},
+      {10,
+       "Fancy Light Strips",
+       "strip_effect",
+       0,
+       {{0, 13, "NF"}, {13, 75, "7 fixed color options"}, {76, 255, "20 self-drive effect options"}}},
+      {11, "Speed of the light band", "speed", 0, {{0, 255, "The effect goes from slow to fast"}}},
+      {12,
+       "Built-in color effect",
+       "effect_mode",
+       0,
+       {{0, 15, "NF"}, {16, 95, "Color Shift"}, {96, 177, "Tint Gradients"}, {178, 255, "Chromatic aberration"}}},
+      {13,
+       "Macro function controls",
+       "macro",
+       0,
+       {{0, 50, "NF"},
+        {51, 150, "Random walk"},
+        {151, 250, "Voice activated self-propelled"},
+        {251, 255, "Wait 3 seconds, then machine reset"}}},
+  };
+
+  int templateId = findTemplateIdByName(db_, kMiraTemplateName, error);
+  if (!error.empty()) {
     return false;
   }
 
-  sqlite3_bind_text(checkStmt.stmt, 1, "Mira Dye", -1, SQLITE_TRANSIENT);
-  if (sqlite3_step(checkStmt.stmt) == SQLITE_ROW) {
-    return true;
+  // New install: create Mira Dye directly as the known A-mode layout.
+  if (templateId == 0) {
+    if (!beginTransaction(error)) {
+      return false;
+    }
+
+    do {
+      Statement templateStmt;
+      if (!prepare(db_, "INSERT INTO fixture_templates(name, description, footprint_channels) VALUES(?, ?, 13);",
+                   templateStmt, error)) {
+        break;
+      }
+
+      sqlite3_bind_text(templateStmt.stmt, 1, kMiraTemplateName, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(templateStmt.stmt, 2, kMiraADescription, -1, SQLITE_TRANSIENT);
+      if (sqlite3_step(templateStmt.stmt) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db_);
+        break;
+      }
+
+      const int newTemplateId = static_cast<int>(sqlite3_last_insert_rowid(db_));
+      if (!insertTemplateChannels(db_, newTemplateId, aModeChannels, error)) {
+        break;
+      }
+
+      if (!commitTransaction(error)) {
+        break;
+      }
+      return true;
+    } while (false);
+
+    rollbackTransaction();
+    return false;
   }
 
+  const bool alreadyAMode = templateChannelsMatch(db_, templateId, aModeChannels, error);
+  if (!error.empty()) {
+    return false;
+  }
+
+  if (alreadyAMode) {
+    return updateTemplateMetadata(db_, templateId, kMiraADescription, 13, error);
+  }
+
+  // Existing install with a different Mira layout: snapshot as legacy D-mode, then replace Mira with A-mode.
   if (!beginTransaction(error)) {
     return false;
   }
 
   do {
-    Statement templateStmt;
-    if (!prepare(db_, "INSERT INTO fixture_templates(name, description, footprint_channels) VALUES(?, ?, 13);",
-                 templateStmt, error)) {
-      break;
-    }
-
-    sqlite3_bind_text(templateStmt.stmt, 1, "Mira Dye", -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(
-        templateStmt.stmt, 2,
-        "Moving-head RGBW profile with X/Y axes, strip effects, built-in color programs, and macro control.", -1,
-        SQLITE_TRANSIENT);
-
-    if (sqlite3_step(templateStmt.stmt) != SQLITE_DONE) {
-      error = sqlite3_errmsg(db_);
-      break;
-    }
-
-    const int templateId = static_cast<int>(sqlite3_last_insert_rowid(db_));
-
-    struct SeedChannel {
-      int idx;
-      const char* name;
-      const char* kind;
-      int defaultValue;
-      std::vector<std::tuple<int, int, const char*>> ranges;
-    };
-
-    const std::vector<SeedChannel> channels = {
-        {1, "X axle", "pan", 128, {{0, 255, "0-360 degree rotation"}}},
-        {2, "Y axle", "tilt", 128, {{0, 255, "0-180 degree rotation"}}},
-        {3, "X-axis speed", "pan_speed", 255, {{0, 255, "Speed fast to slow"}}},
-        {4, "Total light control", "dimmer", 255, {{0, 255, "Linear dimming dark to light"}}},
-        {5, "Stroboflash", "strobe", 0, {{0, 9, "NF"}, {10, 255, "Flicker slow to fast"}}},
-        {6, "Stained Red", "red", 0, {{0, 255, "Red linear dimming 0-100%"}}},
-        {7, "Tinted Green", "green", 0, {{0, 255, "Green linear dimming 0-100%"}}},
-        {8, "Dye blue", "blue", 0, {{0, 255, "Blue linear dimming 0-100%"}}},
-        {9, "Stained White", "white", 0, {{0, 255, "White linear dimming 0-100%"}}},
-        {10,
-         "Fancy Light Strips",
-         "strip_effect",
-         0,
-         {{0, 13, "NF"}, {13, 75, "7 fixed color options"}, {76, 255, "20 self-drive effect options"}}},
-        {11, "Speed of the light band", "speed", 0, {{0, 255, "Effect speed slow to fast"}}},
-        {12,
-         "Built-in color effect",
-         "effect_mode",
-         0,
-         {{0, 15, "NF"}, {16, 95, "Color Shift"}, {96, 177, "Tint Gradients"}, {178, 255, "Chromatic aberration"}}},
-        {13,
-         "Macro function controls",
-         "macro",
-         0,
-         {{0, 50, "NF"},
-          {51, 150, "Random walk"},
-          {151, 250, "Voice activated self-propelled"},
-          {251, 255, "Wait 3 seconds then reset"}}},
-    };
-
-    Statement channelStmt;
-    if (!prepare(db_,
-                 "INSERT INTO template_channels(template_id, channel_index, name, kind, default_value) VALUES(?, ?, ?, ?, ?);",
-                 channelStmt, error)) {
-      break;
-    }
-
-    Statement rangeStmt;
-    if (!prepare(db_,
-                 "INSERT INTO template_channel_ranges(channel_id, start_value, end_value, label) VALUES(?, ?, ?, ?);",
-                 rangeStmt, error)) {
-      break;
-    }
-
-    for (const auto& c : channels) {
-      sqlite3_reset(channelStmt.stmt);
-      sqlite3_clear_bindings(channelStmt.stmt);
-      sqlite3_bind_int(channelStmt.stmt, 1, templateId);
-      sqlite3_bind_int(channelStmt.stmt, 2, c.idx);
-      sqlite3_bind_text(channelStmt.stmt, 3, c.name, -1, SQLITE_TRANSIENT);
-      sqlite3_bind_text(channelStmt.stmt, 4, c.kind, -1, SQLITE_TRANSIENT);
-      sqlite3_bind_int(channelStmt.stmt, 5, c.defaultValue);
-      if (sqlite3_step(channelStmt.stmt) != SQLITE_DONE) {
-        error = sqlite3_errmsg(db_);
-        break;
-      }
-
-      const int channelId = static_cast<int>(sqlite3_last_insert_rowid(db_));
-      for (const auto& r : c.ranges) {
-        sqlite3_reset(rangeStmt.stmt);
-        sqlite3_clear_bindings(rangeStmt.stmt);
-        sqlite3_bind_int(rangeStmt.stmt, 1, channelId);
-        sqlite3_bind_int(rangeStmt.stmt, 2, std::get<0>(r));
-        sqlite3_bind_int(rangeStmt.stmt, 3, std::get<1>(r));
-        sqlite3_bind_text(rangeStmt.stmt, 4, std::get<2>(r), -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(rangeStmt.stmt) != SQLITE_DONE) {
-          error = sqlite3_errmsg(db_);
-          break;
-        }
-      }
-
-      if (!error.empty()) {
-        break;
-      }
-    }
-
+    const int legacyTemplateId = findTemplateIdByName(db_, kMiraLegacyTemplateName, error);
     if (!error.empty()) {
+      break;
+    }
+    if (legacyTemplateId == 0) {
+      if (!cloneTemplateDefinition(db_, templateId, kMiraLegacyTemplateName,
+                                   "Legacy Mira layout snapshot kept before A-mode migration.", error)) {
+        break;
+      }
+    }
+
+    if (!clearTemplateChannels(db_, templateId, error)) {
+      break;
+    }
+    if (!updateTemplateMetadata(db_, templateId, kMiraADescription, 13, error)) {
+      break;
+    }
+    if (!insertTemplateChannels(db_, templateId, aModeChannels, error)) {
       break;
     }
 
     if (!commitTransaction(error)) {
       break;
     }
-
     return true;
   } while (false);
 
