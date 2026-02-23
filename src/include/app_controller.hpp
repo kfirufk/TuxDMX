@@ -68,6 +68,7 @@ class AppController {
   std::unordered_map<int, ReactiveFixtureState> reactiveStates_;
   std::chrono::steady_clock::time_point lastReactiveApply_{};
   std::atomic<float> reactiveVolumeThreshold_{0.12F};
+  std::atomic<int> reactiveProfile_{0};  // 0=balanced, 1=volume_blackout
 };
 
 }  // namespace tuxdmx

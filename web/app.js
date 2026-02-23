@@ -82,6 +82,7 @@ const els = {
   midiInputSelect: document.getElementById('midi-input-select'),
   midiStatus: document.getElementById('midi-status'),
   midiLearnStatus: document.getElementById('midi-learn-status'),
+  reactiveProfileSelect: document.getElementById('reactive-profile-select'),
   reactiveLiveEnergy: document.getElementById('reactive-live-energy'),
   reactiveLiveEnergyValue: document.getElementById('reactive-live-energy-value'),
   reactiveThreshold: document.getElementById('reactive-threshold'),
@@ -1489,8 +1490,12 @@ function renderStatus(dmx, audio) {
   els.audioBass.textContent = `Bass: ${Number(audio.bass || 0).toFixed(2)} • Treble: ${Number(audio.treble || 0).toFixed(2)}`;
   els.audioBpm.textContent = `BPM: ${Number(audio.bpm || 0).toFixed(1)} • Beat: ${audio.beat ? 'Yes' : 'No'}`;
   const reactiveThreshold = Math.max(0, Math.min(1, Number(audio.reactiveVolumeThreshold ?? 0.12)));
+  const reactiveProfile = String(audio.reactiveProfile || 'balanced');
   if (els.audioThreshold) {
     els.audioThreshold.textContent = `Reactive Threshold: ${reactiveThreshold.toFixed(2)}`;
+  }
+  if (els.reactiveProfileSelect && document.activeElement !== els.reactiveProfileSelect) {
+    els.reactiveProfileSelect.value = reactiveProfile === 'volume_blackout' ? 'volume_blackout' : 'balanced';
   }
 
   if (els.reactiveLiveEnergy) {
@@ -2401,6 +2406,26 @@ async function setReactiveModeFromMidi(enabled) {
   }
 }
 
+async function applyReactiveProfile({ notify = true } = {}) {
+  if (!els.reactiveProfileSelect) return;
+  const profile = els.reactiveProfileSelect.value === 'volume_blackout' ? 'volume_blackout' : 'balanced';
+
+  try {
+    await api('/api/audio/reactive-profile', {
+      method: 'POST',
+      body: { profile },
+    });
+    if (state.audio) {
+      state.audio.reactiveProfile = profile;
+    }
+    if (notify) {
+      showToast(`Reactive profile: ${profile === 'volume_blackout' ? 'Volume Blackout' : 'Balanced'}`);
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
 async function applyReactiveThreshold({ notify = false } = {}) {
   if (!els.reactiveThreshold) return;
 
@@ -2643,6 +2668,11 @@ function installEventListeners() {
 
   els.refreshBtn.addEventListener('click', () => loadState());
   els.audioToggle.addEventListener('click', toggleReactiveMode);
+  if (els.reactiveProfileSelect) {
+    els.reactiveProfileSelect.addEventListener('change', () => {
+      applyReactiveProfile({ notify: true }).catch((err) => showToast(err.message, 'error'));
+    });
+  }
   if (els.reactiveThreshold) {
     els.reactiveThreshold.addEventListener('input', () => {
       const liveValue = Math.max(0, Math.min(1, Number(els.reactiveThreshold.value || 0)));

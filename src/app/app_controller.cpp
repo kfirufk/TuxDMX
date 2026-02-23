@@ -77,6 +77,34 @@ std::optional<ChannelRange> pickRangeByKeywords(const std::vector<ChannelRange>&
   return std::nullopt;
 }
 
+std::string reactiveProfileName(int profile) {
+  return profile == 1 ? "volume_blackout" : "balanced";
+}
+
+int reactiveProfileFromName(std::string_view raw) {
+  const std::string lowered = toLower(raw);
+  if (lowered == "volume_blackout" || lowered == "volume-blackout" || lowered == "volume blackout") {
+    return 1;
+  }
+  return 0;
+}
+
+int rangeLowValue(const ChannelRange& range) {
+  return clampDmx(std::min(range.startValue, range.endValue));
+}
+
+int rangeMidValue(const ChannelRange& range) {
+  return midpoint(range);
+}
+
+int neutralRangeValue(const std::vector<ChannelRange>& ranges) {
+  const auto neutral = pickRangeByKeywords(ranges, {"nf", "off", "none", "manual", "static", "stop", "disable"});
+  if (neutral.has_value()) {
+    return rangeLowValue(*neutral);
+  }
+  return 0;
+}
+
 std::vector<int> parseCsvInts(std::string_view csv) {
   std::vector<int> values;
   std::size_t start = 0;
@@ -487,6 +515,7 @@ std::string AppController::buildStatusJson() {
   const auto dmxStatus = dmx_.status();
   const auto metrics = audio_.currentMetrics();
   const float reactiveVolumeThreshold = std::clamp(reactiveVolumeThreshold_.load(), 0.0F, 1.0F);
+  const std::string reactiveProfile = reactiveProfileName(reactiveProfile_.load());
   const auto inputDevices = audio_.inputDevices();
   const int defaultInputDeviceId = audio_.defaultInputDeviceId();
   const int selectedInputDeviceId = audio_.selectedInputDeviceId();
@@ -528,7 +557,8 @@ std::string AppController::buildStatusJson() {
   ss << "\"treble\":" << metrics.treble << ',';
   ss << "\"bpm\":" << metrics.bpm << ',';
   ss << "\"beat\":" << jsonBool(metrics.beat) << ',';
-  ss << "\"reactiveVolumeThreshold\":" << reactiveVolumeThreshold;
+  ss << "\"reactiveVolumeThreshold\":" << reactiveVolumeThreshold << ',';
+  ss << "\"reactiveProfile\":\"" << jsonEscape(reactiveProfile) << "\"";
   ss << "}}";
 
   return ss.str();
@@ -559,6 +589,7 @@ std::string AppController::buildStateJson() {
   const auto dmxStatus = dmx_.status();
   const auto metrics = audio_.currentMetrics();
   const float reactiveVolumeThreshold = std::clamp(reactiveVolumeThreshold_.load(), 0.0F, 1.0F);
+  const std::string reactiveProfile = reactiveProfileName(reactiveProfile_.load());
   const auto inputDevices = audio_.inputDevices();
   const int defaultInputDeviceId = audio_.defaultInputDeviceId();
   const int selectedInputDeviceId = audio_.selectedInputDeviceId();
@@ -604,7 +635,8 @@ std::string AppController::buildStateJson() {
   ss << "\"treble\":" << metrics.treble << ',';
   ss << "\"bpm\":" << metrics.bpm << ',';
   ss << "\"beat\":" << jsonBool(metrics.beat) << ',';
-  ss << "\"reactiveVolumeThreshold\":" << reactiveVolumeThreshold;
+  ss << "\"reactiveVolumeThreshold\":" << reactiveVolumeThreshold << ',';
+  ss << "\"reactiveProfile\":\"" << jsonEscape(reactiveProfile) << "\"";
   ss << '}';
 
   ss << ",\"templates\":";
@@ -701,6 +733,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
 
   std::uniform_real_distribution<float> hueJitter(-4.0F, 4.0F);
   const float gate = std::clamp(reactiveVolumeThreshold_.load(), 0.0F, 1.0F);
+  const bool volumeBlackoutProfile = reactiveProfile_.load() == 1;
 
   for (const auto& resolved : fixtures) {
     const auto& fixture = resolved.fixture;
@@ -721,6 +754,9 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
     const bool nearSilence = !strongBeat && metrics.energy < gate && metrics.bass < gate && metrics.treble < gate;
     if (nearSilence) {
       state.smoothedEnergy *= 0.75F;
+      if (state.smoothedEnergy < 0.01F) {
+        state.smoothedEnergy = 0.0F;
+      }
     }
 
     const float activity = gate >= 0.99F
@@ -728,7 +764,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
                                : std::clamp((state.smoothedEnergy - gate) / std::max(0.01F, 1.0F - gate), 0.0F, 1.0F);
 
     // Hue motion follows meaningful audio activity. When quiet, it barely changes.
-    float hueStep = 0.06F + (activity * 2.4F);
+    float hueStep = volumeBlackoutProfile && nearSilence ? 0.0F : (0.06F + (activity * 2.4F));
     if (strongBeat) {
       hueStep += 0.9F;
     }
@@ -744,7 +780,8 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
       state.hue -= 360.0F;
     }
 
-    const float colorValue = std::clamp(0.26F + state.smoothedEnergy * 0.74F, 0.0F, 1.0F);
+    const float colorFloor = volumeBlackoutProfile ? 0.0F : 0.26F;
+    const float colorValue = std::clamp(colorFloor + state.smoothedEnergy * 0.74F, 0.0F, 1.0F);
     const auto rgb = hsvToRgb(state.hue + (strongBeat ? 12.0F : 0.0F), 0.9F, colorValue);
 
     std::vector<ChannelPatch> patches;
@@ -761,9 +798,14 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
 
       if (kind == "dimmer") {
         // Master dimmer combines overall loudness and bass accents.
+        const float dimmerBase = volumeBlackoutProfile ? 0.0F : 30.0F;
         const float dimmer =
-            30.0F + (state.smoothedEnergy * 170.0F) + (metrics.bass * 46.0F) + (strongBeat ? 18.0F : 0.0F);
-        nextValue = clampDmx(static_cast<int>(std::round(dimmer)));
+            dimmerBase + (state.smoothedEnergy * 170.0F) + (metrics.bass * 46.0F) + (strongBeat ? 18.0F : 0.0F);
+        if (volumeBlackoutProfile && nearSilence) {
+          nextValue = 0;
+        } else {
+          nextValue = clampDmx(static_cast<int>(std::round(dimmer)));
+        }
       } else if (kind == "pan") {
         // Pan stays parked at center when audio activity is very low.
         if (activity < 0.03F) {
@@ -785,37 +827,43 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
       } else if (kind == "pan_speed") {
         // This channel is documented as 0=fast, 255=slow, so we invert energy.
         // High music energy => lower DMX value => faster movement.
-        float speedValue = 240.0F - (activity * 200.0F) - (strongBeat ? 16.0F : 0.0F);
+        float speedValue = nearSilence ? 255.0F : (240.0F - (activity * 200.0F) - (strongBeat ? 16.0F : 0.0F));
         speedValue = std::clamp(speedValue, 15.0F, 255.0F);
         nextValue = static_cast<int>(std::round(speedValue));
       } else if (kind == "red") {
-        nextValue = rgb[0];
+        nextValue = volumeBlackoutProfile && nearSilence ? 0 : rgb[0];
       } else if (kind == "green") {
-        nextValue = rgb[1];
+        nextValue = volumeBlackoutProfile && nearSilence ? 0 : rgb[1];
       } else if (kind == "blue") {
-        nextValue = rgb[2];
+        nextValue = volumeBlackoutProfile && nearSilence ? 0 : rgb[2];
       } else if (kind == "white") {
         // White is used as a sparkle accent on transients/treble.
-        const float white = 8.0F + (metrics.treble * 130.0F) + (strongBeat ? 70.0F : 0.0F);
-        nextValue = clampDmx(static_cast<int>(std::round(white)));
+        const float whiteBase = volumeBlackoutProfile ? 0.0F : 8.0F;
+        const float white = whiteBase + (metrics.treble * 130.0F) + (strongBeat ? 70.0F : 0.0F);
+        nextValue = volumeBlackoutProfile && nearSilence ? 0 : clampDmx(static_cast<int>(std::round(white)));
       } else if (kind == "speed") {
         // Effect speed scales with measured BPM and overall energy.
         const float speed = 14.0F + (metrics.bpm * 0.55F) + (state.smoothedEnergy * 86.0F);
         nextValue = clampDmx(static_cast<int>(std::round(speed)));
       } else if (kind == "strobe") {
         std::optional<ChannelRange> targetRange;
-        if (strongBeat || metrics.energy > std::max(0.72F, gate + 0.40F)) {
+        if (!nearSilence && (strongBeat || metrics.energy > std::max(0.72F, gate + 0.40F))) {
           targetRange = pickRangeByKeywords(channel.ranges, {"strobe", "flash", "flicker"});
         } else {
           targetRange = pickRangeByKeywords(channel.ranges, {"no", "off", "manual", "static"});
         }
 
         if (targetRange.has_value()) {
-          nextValue = midpoint(*targetRange);
+          nextValue = nearSilence ? rangeLowValue(*targetRange) : rangeMidValue(*targetRange);
         } else {
           nextValue = strongBeat ? 160 : 0;
         }
       } else if (kind == "mode" || kind == "strip_effect" || kind == "effect") {
+        if (nearSilence) {
+          nextValue = neutralRangeValue(channel.ranges);
+          continue;
+        }
+
         std::vector<std::string> desired;
 
         if (kind == "strip_effect" || kind == "effect") {
@@ -852,11 +900,16 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         }
 
         if (range.has_value()) {
-          nextValue = midpoint(*range);
+          nextValue = rangeMidValue(*range);
         } else {
           nextValue = 0;
         }
       } else if (kind == "effect_mode") {
+        if (nearSilence) {
+          nextValue = neutralRangeValue(channel.ranges);
+          continue;
+        }
+
         std::vector<std::string> desired;
 
         if (metrics.treble > std::max(0.68F, gate + 0.28F)) {
@@ -875,11 +928,16 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         }
 
         if (range.has_value()) {
-          nextValue = midpoint(*range);
+          nextValue = rangeMidValue(*range);
         } else {
           nextValue = 0;
         }
       } else if (kind == "macro") {
+        if (nearSilence) {
+          nextValue = neutralRangeValue(channel.ranges);
+          continue;
+        }
+
         std::vector<std::string> desired;
 
         // Macro logic intentionally avoids reset ranges during autoplay.
@@ -903,7 +961,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         }
 
         if (range.has_value()) {
-          nextValue = midpoint(*range);
+          nextValue = rangeMidValue(*range);
         } else {
           nextValue = 0;
         }
@@ -1602,6 +1660,21 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
 
     std::ostringstream ss;
     ss << "{\"ok\":true,\"reactiveVolumeThreshold\":" << threshold << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/audio/reactive-profile") {
+    auto form = parseFormEncoded(request.body);
+    auto profileIt = form.find("profile");
+    if (profileIt == form.end() || trim(profileIt->second).empty()) {
+      return jsonError(422, "Missing field: profile");
+    }
+
+    const int profile = reactiveProfileFromName(profileIt->second);
+    reactiveProfile_.store(profile);
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"reactiveProfile\":\"" << jsonEscape(reactiveProfileName(profile)) << "\"}";
     return jsonOk(ss.str());
   }
 
