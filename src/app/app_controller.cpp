@@ -734,6 +734,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
   std::uniform_real_distribution<float> hueJitter(-4.0F, 4.0F);
   const float gate = std::clamp(reactiveVolumeThreshold_.load(), 0.0F, 1.0F);
   const bool volumeBlackoutProfile = reactiveProfile_.load() == 1;
+  const bool simulatedAudioSource = toLower(audio_.backendName()).find("simulated-energy") != std::string::npos;
 
   for (const auto& resolved : fixtures) {
     const auto& fixture = resolved.fixture;
@@ -749,9 +750,12 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
 
     // Ignore tiny beat spikes in near-silence so moving heads do not drift when the room is quiet.
     const float beatGate = std::max(0.05F, gate * 0.85F);
-    const bool strongBeat =
-        metrics.beat && (metrics.energy >= beatGate || metrics.bass >= beatGate || metrics.treble >= beatGate);
-    const bool nearSilence = !strongBeat && metrics.energy < gate && metrics.bass < gate && metrics.treble < gate;
+    const bool strongBeat = metrics.beat && (metrics.energy >= beatGate);
+    bool nearSilence = !strongBeat && metrics.energy < gate;
+    if (volumeBlackoutProfile && simulatedAudioSource) {
+      // In this profile, synthetic fallback audio should never drive fixtures.
+      nearSilence = true;
+    }
     if (nearSilence) {
       state.smoothedEnergy *= 0.75F;
       if (state.smoothedEnergy < 0.01F) {
