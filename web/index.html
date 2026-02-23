@@ -114,11 +114,20 @@
           <article class="performance-card">
             <h3>Reactive Threshold</h3>
             <p>Ignore low background sound below this energy level.</p>
-            <label>
-              Minimum Energy (0-1)
-              <input id="reactive-threshold" type="number" min="0" max="1" step="0.01" value="0.12">
-            </label>
-            <button id="apply-reactive-threshold-btn" class="btn ghost" type="button">Apply Threshold</button>
+            <div class="reactive-meter">
+              <div class="meter-label">
+                <span>Live Volume</span>
+                <strong id="reactive-live-energy-value">0.00</strong>
+              </div>
+              <input id="reactive-live-energy" type="range" min="0" max="1" step="0.01" value="0" disabled>
+            </div>
+            <div class="reactive-meter">
+              <div class="meter-label">
+                <span>Minimum Energy Threshold</span>
+                <strong id="reactive-threshold-value">0.12</strong>
+              </div>
+              <input id="reactive-threshold" type="range" min="0" max="1" step="0.01" value="0.12">
+            </div>
           </article>
 
           <article class="performance-card">

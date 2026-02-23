@@ -59,7 +59,7 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
   - real microphone analysis via PortAudio when available
   - adaptive energy + bass/treble + beat + BPM estimation
   - fallback simulated analyzer when PortAudio is unavailable
-  - adjustable minimum energy threshold (ignore low background noise)
+  - live volume meter + adjustable minimum energy threshold slider (ignore low background noise)
   - reactive playback maps to channel kinds and labeled ranges with documented formulas in code
   - quiet-room movement guard for pan/tilt fixtures to prevent random drift in near-silence
 

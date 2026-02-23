@@ -321,6 +321,27 @@ body {
   font-weight: 700;
 }
 
+.reactive-meter {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.meter-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.meter-label strong {
+  color: var(--ink);
+  min-width: 2.8rem;
+  text-align: right;
+}
+
 .perf-hold-btn {
   user-select: none;
   touch-action: manipulation;

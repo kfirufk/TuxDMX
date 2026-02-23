@@ -66,6 +66,7 @@ const state = {
   refreshTimer: null,
   toastTimer: null,
   learnSendTimer: null,
+  reactiveThresholdTimer: null,
 };
 
 const els = {
@@ -81,8 +82,10 @@ const els = {
   midiInputSelect: document.getElementById('midi-input-select'),
   midiStatus: document.getElementById('midi-status'),
   midiLearnStatus: document.getElementById('midi-learn-status'),
+  reactiveLiveEnergy: document.getElementById('reactive-live-energy'),
+  reactiveLiveEnergyValue: document.getElementById('reactive-live-energy-value'),
   reactiveThreshold: document.getElementById('reactive-threshold'),
-  applyReactiveThresholdBtn: document.getElementById('apply-reactive-threshold-btn'),
+  reactiveThresholdValue: document.getElementById('reactive-threshold-value'),
   performanceFadeSeconds: document.getElementById('performance-fade-seconds'),
   performanceFadeMidiSlot: document.getElementById('performance-fade-midi-slot'),
   performanceAllOnIntensity: document.getElementById('performance-all-on-intensity'),
@@ -1481,7 +1484,8 @@ function renderStatus(dmx, audio) {
   els.deviceSerial.textContent = `Serial: ${dmx.serial || '--'}`;
   els.deviceFw.textContent = `Firmware: ${dmx.firmwareMajor}.${dmx.firmwareMinor}`;
   els.audioBackend.textContent = `Audio Backend: ${audio.backend || '--'}`;
-  els.audioEnergy.textContent = `Energy: ${Number(audio.energy || 0).toFixed(2)}`;
+  const liveEnergy = Math.max(0, Math.min(1, Number(audio.energy || 0)));
+  els.audioEnergy.textContent = `Energy: ${liveEnergy.toFixed(2)}`;
   els.audioBass.textContent = `Bass: ${Number(audio.bass || 0).toFixed(2)} • Treble: ${Number(audio.treble || 0).toFixed(2)}`;
   els.audioBpm.textContent = `BPM: ${Number(audio.bpm || 0).toFixed(1)} • Beat: ${audio.beat ? 'Yes' : 'No'}`;
   const reactiveThreshold = Math.max(0, Math.min(1, Number(audio.reactiveVolumeThreshold ?? 0.12)));
@@ -1489,8 +1493,19 @@ function renderStatus(dmx, audio) {
     els.audioThreshold.textContent = `Reactive Threshold: ${reactiveThreshold.toFixed(2)}`;
   }
 
+  if (els.reactiveLiveEnergy) {
+    els.reactiveLiveEnergy.value = liveEnergy.toFixed(2);
+  }
+  if (els.reactiveLiveEnergyValue) {
+    els.reactiveLiveEnergyValue.textContent = liveEnergy.toFixed(2);
+  }
+
   if (els.reactiveThreshold && document.activeElement !== els.reactiveThreshold) {
     els.reactiveThreshold.value = reactiveThreshold.toFixed(2);
+  }
+  if (els.reactiveThresholdValue) {
+    const currentThreshold = els.reactiveThreshold ? Number(els.reactiveThreshold.value || reactiveThreshold) : reactiveThreshold;
+    els.reactiveThresholdValue.textContent = Math.max(0, Math.min(1, currentThreshold)).toFixed(2);
   }
 
   els.audioToggle.textContent = `Music Reactive: ${audio.reactiveMode ? 'On' : 'Off'}`;
@@ -2386,7 +2401,7 @@ async function setReactiveModeFromMidi(enabled) {
   }
 }
 
-async function applyReactiveThreshold() {
+async function applyReactiveThreshold({ notify = false } = {}) {
   if (!els.reactiveThreshold) return;
 
   const threshold = Number(els.reactiveThreshold.value || 0);
@@ -2399,17 +2414,31 @@ async function applyReactiveThreshold() {
   if (Math.abs(normalized - threshold) > 0.0001) {
     els.reactiveThreshold.value = normalized.toFixed(2);
   }
+  if (els.reactiveThresholdValue) {
+    els.reactiveThresholdValue.textContent = normalized.toFixed(2);
+  }
 
   try {
     await api('/api/audio/reactive-threshold', {
       method: 'POST',
       body: { threshold: String(normalized) },
     });
-    await loadState({ silent: true });
-    showToast(`Reactive threshold set to ${normalized.toFixed(2)}`);
+    if (state.audio) {
+      state.audio.reactiveVolumeThreshold = normalized;
+    }
+    if (notify) {
+      showToast(`Reactive threshold set to ${normalized.toFixed(2)}`);
+    }
   } catch (err) {
     showToast(err.message, 'error');
   }
+}
+
+function queueReactiveThresholdApply() {
+  window.clearTimeout(state.reactiveThresholdTimer);
+  state.reactiveThresholdTimer = window.setTimeout(() => {
+    applyReactiveThreshold().catch((err) => showToast(err.message, 'error'));
+  }, 140);
 }
 
 async function applyAudioInputDevice() {
@@ -2614,17 +2643,17 @@ function installEventListeners() {
 
   els.refreshBtn.addEventListener('click', () => loadState());
   els.audioToggle.addEventListener('click', toggleReactiveMode);
-  if (els.applyReactiveThresholdBtn) {
-    els.applyReactiveThresholdBtn.addEventListener('click', () => {
-      applyReactiveThreshold().catch((err) => showToast(err.message, 'error'));
-    });
-  }
   if (els.reactiveThreshold) {
-    els.reactiveThreshold.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        applyReactiveThreshold().catch((err) => showToast(err.message, 'error'));
+    els.reactiveThreshold.addEventListener('input', () => {
+      const liveValue = Math.max(0, Math.min(1, Number(els.reactiveThreshold.value || 0)));
+      if (els.reactiveThresholdValue) {
+        els.reactiveThresholdValue.textContent = liveValue.toFixed(2);
       }
+      queueReactiveThresholdApply();
+    });
+    els.reactiveThreshold.addEventListener('change', () => {
+      window.clearTimeout(state.reactiveThresholdTimer);
+      applyReactiveThreshold({ notify: true }).catch((err) => showToast(err.message, 'error'));
     });
   }
   els.applyAudioInputBtn.addEventListener('click', applyAudioInputDevice);
