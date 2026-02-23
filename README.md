@@ -38,6 +38,7 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
   - fast blank-channel generator for unknown fixtures (manual missing workflow)
   - clean view menu (Live / Patch / Templates / Groups / Learn)
   - auto-refresh-safe form selections (pending choices are preserved until applied)
+  - auto-refresh pauses while editing form fields (resumes automatically after short idle)
 - Audio input routing UI:
   - lists available input devices
   - shows default/selected/active input

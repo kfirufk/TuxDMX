@@ -62,6 +62,7 @@ const state = {
   },
   activeView: 'live',
   controlMode: 'slider',
+  autoRefreshPauseUntil: 0,
   refreshTimer: null,
   toastTimer: null,
   learnSendTimer: null,
@@ -176,6 +177,8 @@ const ICONS = {
   voice: '<svg viewBox="0 0 24 24"><path d="M12 4a3 3 0 0 1 3 3v4a3 3 0 0 1-6 0V7a3 3 0 0 1 3-3z"/><path d="M7 11a5 5 0 0 0 10 0M12 16v4"/></svg>',
 };
 
+const AUTO_REFRESH_EDIT_PAUSE_MS = 5000;
+
 async function api(path, options = {}) {
   const opts = { method: 'GET', ...options };
   if (opts.body && typeof opts.body === 'object' && !(opts.body instanceof URLSearchParams) && !(opts.body instanceof FormData)) {
@@ -208,6 +211,30 @@ function showToast(message, kind = 'info') {
   state.toastTimer = window.setTimeout(() => {
     els.toast.classList.remove('visible');
   }, 2600);
+}
+
+function pauseAutoRefreshForEditing(durationMs = AUTO_REFRESH_EDIT_PAUSE_MS) {
+  const nextUntil = Date.now() + Math.max(400, Number(durationMs || AUTO_REFRESH_EDIT_PAUSE_MS));
+  state.autoRefreshPauseUntil = Math.max(state.autoRefreshPauseUntil, nextUntil);
+}
+
+function shouldAutoRefreshNow() {
+  return Date.now() >= state.autoRefreshPauseUntil;
+}
+
+function installAutoRefreshPauseGuards(root) {
+  if (!root) return;
+
+  const handler = (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (!target.closest('input, select, textarea, button')) return;
+    pauseAutoRefreshForEditing();
+  };
+
+  ['focusin', 'input', 'change', 'keydown', 'pointerdown'].forEach((eventName) => {
+    root.addEventListener(eventName, handler, true);
+  });
 }
 
 function iconForKind(kind) {
@@ -2601,6 +2628,16 @@ function installEventListeners() {
     });
   });
 
+  const learnEditorRoot = els.learnFixtureSelect?.closest('.stack-form');
+  const autoPauseRoots = [
+    els.templateForm,
+    els.fixtureForm,
+    els.groupForm,
+    els.learnCreateForm,
+    learnEditorRoot,
+  ];
+  autoPauseRoots.forEach((root) => installAutoRefreshPauseGuards(root));
+
   window.addEventListener('resize', updatePatchRangePreview);
 }
 
@@ -2633,6 +2670,7 @@ async function boot() {
   await loadState();
 
   state.refreshTimer = window.setInterval(() => {
+    if (!shouldAutoRefreshNow()) return;
     loadState({ silent: true });
   }, 2500);
 }
