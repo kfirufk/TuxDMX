@@ -1397,6 +1397,7 @@ function updatePatchRangePreview() {
 
 function renderTemplates(templates) {
   state.templates = templates;
+  const previousTemplateValue = els.fixtureTemplateSelect.value;
 
   els.templateList.innerHTML = '';
   els.fixtureTemplateSelect.innerHTML = '';
@@ -1406,6 +1407,7 @@ function renderTemplates(templates) {
     option.value = '';
     option.textContent = 'No templates yet';
     els.fixtureTemplateSelect.appendChild(option);
+    updatePatchRangePreview();
     return;
   }
 
@@ -1423,6 +1425,11 @@ function renderTemplates(templates) {
     `;
     els.templateList.appendChild(pill);
   });
+
+  const preferredTemplateValue = templates.some((template) => String(template.id) === previousTemplateValue)
+    ? previousTemplateValue
+    : String(templates[0].id);
+  els.fixtureTemplateSelect.value = preferredTemplateValue;
 
   updatePatchRangePreview();
 }
@@ -1455,6 +1462,7 @@ function renderStatus(dmx, audio) {
   const defaultInputDeviceId = Number(audio.defaultInputDeviceId ?? -1);
   const selectedInputDeviceId = Number(audio.selectedInputDeviceId ?? -1);
   const activeInputDeviceId = Number(audio.activeInputDeviceId ?? -2);
+  const previousAudioInputChoice = Number(els.audioInputSelect.value || NaN);
   const deviceById = new Map(inputDevices.map((device) => [Number(device.id), device]));
   const defaultDeviceName = deviceById.get(defaultInputDeviceId)?.name || 'None';
 
@@ -1474,7 +1482,13 @@ function renderStatus(dmx, audio) {
 
   const hasSelectedOption =
     selectedInputDeviceId === -1 || inputDevices.some((device) => Number(device.id) === selectedInputDeviceId);
-  els.audioInputSelect.value = String(hasSelectedOption ? selectedInputDeviceId : -1);
+  const hasPreviousChoice = Number.isFinite(previousAudioInputChoice)
+    && (previousAudioInputChoice === -1
+      || inputDevices.some((device) => Number(device.id) === previousAudioInputChoice));
+  const uiChoice = hasPreviousChoice
+    ? previousAudioInputChoice
+    : (hasSelectedOption ? selectedInputDeviceId : -1);
+  els.audioInputSelect.value = String(uiChoice);
 
   const selectedLabel = selectedInputDeviceId === -1
     ? `Default (${defaultDeviceName})`
@@ -1482,7 +1496,14 @@ function renderStatus(dmx, audio) {
   const activeLabel = activeInputDeviceId >= 0
     ? (deviceById.get(activeInputDeviceId)?.name || `Device ${activeInputDeviceId}`)
     : 'Simulated fallback';
-  els.audioInputLabel.textContent = `Selected: ${selectedLabel} • Active: ${activeLabel}`;
+  let pendingLabel = '';
+  if (uiChoice !== selectedInputDeviceId) {
+    const pendingName = uiChoice === -1
+      ? `Default (${defaultDeviceName})`
+      : (deviceById.get(uiChoice)?.name || `Device ${uiChoice}`);
+    pendingLabel = ` • Pending: ${pendingName}`;
+  }
+  els.audioInputLabel.textContent = `Selected: ${selectedLabel} • Active: ${activeLabel}${pendingLabel}`;
 
   const canSelectInput = inputDevices.length > 0;
   els.audioInputSelect.disabled = !canSelectInput;
