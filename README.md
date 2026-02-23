@@ -11,6 +11,8 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
   - fixture patching (universe/start/channel count)
   - live channel values
   - fixture groups
+  - scenes (saved lighting looks)
+  - MIDI mappings + MIDI input mode
 - Startup seed templates:
   - **AliExpress 60x3W RGB PAR**
   - **Mira Dye** (A-mode 13ch layout)
@@ -26,7 +28,7 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
 - Live control UI:
   - fixture cards with per-channel sliders (default)
   - optional knob mode toggle in toolbar
-  - MIDI learn/clear per live control node (fixture channels and group controls)
+  - server-side MIDI learn/clear per live control node (fixture channels, group controls, scene recall, reactive toggle)
   - performance hold buttons with smooth attack/release:
     - all-on lift
     - blackout
@@ -34,11 +36,12 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
     - strobe hit
   - one-click panic blackout button (forces zero DMX and disables music-reactive mode)
   - per-effect intensity controls (all-on / blackout / rotate / strobe)
-  - adjustable fade seconds (decimal support) and intensity controls are MIDI-mappable
+  - adjustable fade seconds (decimal support)
   - value-range chips
   - icon mapping for channel types and mode/range labels
   - fast blank-channel generator for unknown fixtures (manual missing workflow)
   - clean view menu (Live / Patch / Templates / Groups / Learn)
+  - scenes panel: save current state, label it, update/capture, delete, and recall with morph time
   - auto-refresh-safe form selections (pending choices are preserved until applied)
   - auto-refresh pauses while editing form fields (resumes automatically after short idle)
   - safe shutdown blackout: Ctrl+C writes zero values to fixtures and DMX output to prevent restart motion
@@ -74,6 +77,8 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
 - C++23 compiler
 - SQLite3 dev package
 - Optional: PortAudio (`portaudio-2.0`) for real microphone input
+- Optional: RtMidi (`rtmidi`) for server-side MIDI input (cross-platform backend)
+- macOS fallback: CoreMIDI backend is used automatically when RtMidi is not installed
 
 ### Linux/macOS (Ninja)
 
@@ -127,6 +132,7 @@ ctest --preset test-debug
 --port <port>        default: 8080
 --db <path>          default: data/tuxdmx.sqlite
 --web-root <path>    default: ./web
+--log-file <path>    default: data/tuxdmx.log
 ```
 
 ## Key API Endpoints
@@ -141,6 +147,7 @@ ctest --preset test-debug
 - `POST /api/dmx/universes` create/ensure a universe exists
 - `POST /api/dmx/patches` apply temporary direct DMX patches (`universe:address:value,...`)
 - `POST /api/dmx/blackout` panic blackout (set known universes and fixture channels to zero, reactive off)
+- `POST /api/dmx/write-retry-limit` set DMX write retries (`retries` in range `1..200`)
 - `POST /api/audio/reactive` toggle music-reactive mode
 - `POST /api/audio/reactive-threshold` set minimum reactive energy threshold (`threshold` in range `0..1`)
 - `POST /api/audio/reactive-profile` set reactive profile (`profile`: `balanced` or `volume_blackout`)
@@ -149,10 +156,22 @@ ctest --preset test-debug
 - `POST /api/groups/{id}/fixtures` set group members
 - `POST /api/groups/{id}/kinds/{kind}` apply value by channel kind
 - `POST /api/groups/{id}/mode` apply mode by label
+- `POST /api/scenes` create scene from current fixture state
+- `POST /api/scenes/{id}/update` rename/update default transition seconds
+- `POST /api/scenes/{id}/capture` overwrite scene values from current fixture state
+- `POST /api/scenes/{id}/recall` morph to scene values (`transition_seconds` optional)
+- `POST /api/scenes/{id}/delete` delete scene
+- `GET /api/midi` get server MIDI status/mappings
+- `POST /api/midi/input-mode` set MIDI source mode (`all` or input id)
+- `POST /api/midi/learn/start` arm server MIDI learn (`control_id`)
+- `POST /api/midi/learn/cancel` cancel MIDI learn
+- `POST /api/midi/mappings/clear` clear one mapping (`control_id`)
+- `GET /api/logs` get recent server logs
+- `POST /api/logs/clear` clear in-memory debug log buffer
 - `GET /api/templates/export` export templates JSON
 
 ## Notes
 
 - ENTTEC DMX USB Pro is a single physical DMX output. This app supports multiple universes in software and lets you select which universe is routed to the hardware output.
-- MIDI mapping in the web UI uses the browser Web MIDI API (best support in Chrome/Edge).
+- MIDI mapping is handled in the server (RtMidi when available, CoreMIDI fallback on macOS), so control is not tied to browser Web MIDI support.
 - Reactive formulas are intentionally commented in `/Volumes/extreme-ssd/projects/dmx512/tuxdmx/src/app/app_controller.cpp` and `/Volumes/extreme-ssd/projects/dmx512/tuxdmx/src/audio/audio_engine.cpp` so you can tune behavior quickly.

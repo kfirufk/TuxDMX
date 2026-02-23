@@ -90,7 +90,7 @@
         <div class="inline-controls">
           <select id="midi-input-select"></select>
         </div>
-        <p id="midi-status">MIDI: checking browser support...</p>
+        <p id="midi-status">Server MIDI: loading...</p>
         <p id="midi-learn-status">Learn: idle</p>
       </article>
       <article class="debug-log-card">
@@ -209,6 +209,20 @@
             <div id="performance-strobe-midi-slot"></div>
           </article>
         </section>
+
+        <section class="scene-panel" id="scene-panel">
+          <div class="panel-head compact">
+            <h3>Scenes</h3>
+            <p>Save current fixture values as named looks, then recall with smooth morph.</p>
+          </div>
+          <form id="scene-form" class="inline-controls">
+            <input id="scene-name" name="name" type="text" required placeholder="Scary Cave">
+            <input id="scene-transition" name="transition_seconds" type="number" min="0" max="60" step="0.01" value="1.00">
+            <button type="submit" class="btn primary">Save Scene</button>
+          </form>
+          <div id="scene-list" class="scene-list"></div>
+        </section>
+
         <div id="fixture-board" class="fixture-board"></div>
       </section>
     </section>

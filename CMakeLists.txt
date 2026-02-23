@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(TUXDMX_ENABLE_TESTS "Build tuxdmx tests" ON)
 option(TUXDMX_ENABLE_PORTAUDIO "Enable real microphone input via PortAudio" ON)
+option(TUXDMX_ENABLE_RTMIDI "Enable server-side MIDI input via RtMidi" ON)
 
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
@@ -21,6 +22,7 @@ set(TUXDMX_SOURCES
     src/dmx/enttec_dmx_pro.cpp
     src/http/http_server.cpp
     src/logger/logger.cpp
+    src/midi/midi_engine.cpp
 )
 
 add_executable(tuxdmx ${TUXDMX_SOURCES})
@@ -37,6 +39,19 @@ if(TUXDMX_ENABLE_PORTAUDIO AND PkgConfig_FOUND)
     target_link_libraries(tuxdmx PRIVATE PkgConfig::PORTAUDIO)
     target_compile_definitions(tuxdmx PRIVATE TUXDMX_WITH_PORTAUDIO=1)
   endif()
+endif()
+
+if(TUXDMX_ENABLE_RTMIDI AND PkgConfig_FOUND)
+  pkg_check_modules(RTMIDI IMPORTED_TARGET rtmidi)
+  if(RTMIDI_FOUND)
+    target_link_libraries(tuxdmx PRIVATE PkgConfig::RTMIDI)
+    target_compile_definitions(tuxdmx PRIVATE TUXDMX_WITH_RTMIDI=1)
+  endif()
+endif()
+
+if(APPLE AND NOT RTMIDI_FOUND)
+  target_link_libraries(tuxdmx PRIVATE "-framework CoreMIDI" "-framework CoreFoundation")
+  target_compile_definitions(tuxdmx PRIVATE TUXDMX_WITH_COREMIDI=1)
 endif()
 
 if(WIN32)

@@ -483,9 +483,42 @@ CREATE TABLE IF NOT EXISTS fixture_group_members (
   FOREIGN KEY (fixture_id) REFERENCES fixtures(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS scenes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  transition_seconds REAL NOT NULL DEFAULT 1.0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS scene_values (
+  scene_id INTEGER NOT NULL,
+  fixture_id INTEGER NOT NULL,
+  channel_index INTEGER NOT NULL,
+  value INTEGER NOT NULL,
+  PRIMARY KEY(scene_id, fixture_id, channel_index),
+  FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+  FOREIGN KEY (fixture_id) REFERENCES fixtures(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS midi_mappings (
+  control_id TEXT PRIMARY KEY,
+  source TEXT NOT NULL DEFAULT 'all',
+  input_id TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL,
+  channel INTEGER NOT NULL,
+  number INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_fixtures_universe_start ON fixtures(universe, start_address);
 CREATE INDEX IF NOT EXISTS idx_template_channels_template ON template_channels(template_id);
 CREATE INDEX IF NOT EXISTS idx_fixture_channel_values_fixture ON fixture_channel_values(fixture_id);
+CREATE INDEX IF NOT EXISTS idx_scene_values_scene ON scene_values(scene_id);
 )SQL";
 
   if (!execSql(db_, kSchemaSql, error)) {
@@ -1109,6 +1142,346 @@ bool Database::reorderFixtures(const std::vector<int>& fixtureIds, std::string& 
   } while (false);
 
   rollbackTransaction();
+  return false;
+}
+
+std::vector<SceneDefinition> Database::listScenes(std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  std::vector<SceneDefinition> scenes;
+
+  Statement stmt;
+  if (!prepare(db_,
+               "SELECT s.id, s.name, s.transition_seconds, "
+               "(SELECT COUNT(*) FROM scene_values sv WHERE sv.scene_id = s.id) AS value_count "
+               "FROM scenes s ORDER BY s.name COLLATE NOCASE;",
+               stmt, error)) {
+    return scenes;
+  }
+
+  while (sqlite3_step(stmt.stmt) == SQLITE_ROW) {
+    SceneDefinition scene;
+    scene.id = columnInt(stmt.stmt, 0);
+    scene.name = columnText(stmt.stmt, 1);
+    scene.transitionSeconds = static_cast<float>(sqlite3_column_double(stmt.stmt, 2));
+    scene.valueCount = columnInt(stmt.stmt, 3);
+    scenes.push_back(std::move(scene));
+  }
+
+  return scenes;
+}
+
+int Database::createScene(const std::string& name, float transitionSeconds, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  const float clampedSeconds = std::clamp(transitionSeconds, 0.0F, 60.0F);
+
+  if (!beginTransaction(error)) {
+    return 0;
+  }
+
+  int sceneId = 0;
+  do {
+    Statement sceneStmt;
+    if (!prepare(db_, "INSERT INTO scenes(name, transition_seconds) VALUES(?, ?);", sceneStmt, error)) {
+      break;
+    }
+    sqlite3_bind_text(sceneStmt.stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(sceneStmt.stmt, 2, static_cast<double>(clampedSeconds));
+    if (sqlite3_step(sceneStmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db_);
+      break;
+    }
+
+    sceneId = static_cast<int>(sqlite3_last_insert_rowid(db_));
+
+    Statement copyStmt;
+    if (!prepare(
+            db_,
+            "INSERT INTO scene_values(scene_id, fixture_id, channel_index, value) "
+            "SELECT ?, v.fixture_id, v.channel_index, v.value "
+            "FROM fixture_channel_values v JOIN fixtures f ON f.id = v.fixture_id;",
+            copyStmt, error)) {
+      break;
+    }
+    sqlite3_bind_int(copyStmt.stmt, 1, sceneId);
+    if (sqlite3_step(copyStmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db_);
+      break;
+    }
+
+    if (!commitTransaction(error)) {
+      break;
+    }
+    return sceneId;
+  } while (false);
+
+  rollbackTransaction();
+  return 0;
+}
+
+bool Database::updateScene(int sceneId, const std::string& name, float transitionSeconds, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_, "UPDATE scenes SET name = ?, transition_seconds = ? WHERE id = ?;", stmt, error)) {
+    return false;
+  }
+
+  sqlite3_bind_text(stmt.stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_double(stmt.stmt, 2, static_cast<double>(std::clamp(transitionSeconds, 0.0F, 60.0F)));
+  sqlite3_bind_int(stmt.stmt, 3, sceneId);
+
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  if (sqlite3_changes(db_) == 0) {
+    error = "Scene not found";
+    return false;
+  }
+
+  return true;
+}
+
+bool Database::captureScene(int sceneId, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  if (!beginTransaction(error)) {
+    return false;
+  }
+
+  do {
+    Statement existsStmt;
+    if (!prepare(db_, "SELECT id FROM scenes WHERE id = ?;", existsStmt, error)) {
+      break;
+    }
+    sqlite3_bind_int(existsStmt.stmt, 1, sceneId);
+    if (sqlite3_step(existsStmt.stmt) != SQLITE_ROW) {
+      error = "Scene not found";
+      break;
+    }
+
+    Statement deleteStmt;
+    if (!prepare(db_, "DELETE FROM scene_values WHERE scene_id = ?;", deleteStmt, error)) {
+      break;
+    }
+    sqlite3_bind_int(deleteStmt.stmt, 1, sceneId);
+    if (sqlite3_step(deleteStmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db_);
+      break;
+    }
+
+    Statement copyStmt;
+    if (!prepare(
+            db_,
+            "INSERT INTO scene_values(scene_id, fixture_id, channel_index, value) "
+            "SELECT ?, v.fixture_id, v.channel_index, v.value "
+            "FROM fixture_channel_values v JOIN fixtures f ON f.id = v.fixture_id;",
+            copyStmt, error)) {
+      break;
+    }
+    sqlite3_bind_int(copyStmt.stmt, 1, sceneId);
+    if (sqlite3_step(copyStmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db_);
+      break;
+    }
+
+    if (!commitTransaction(error)) {
+      break;
+    }
+    return true;
+  } while (false);
+
+  rollbackTransaction();
+  return false;
+}
+
+bool Database::deleteScene(int sceneId, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_, "DELETE FROM scenes WHERE id = ?;", stmt, error)) {
+    return false;
+  }
+
+  sqlite3_bind_int(stmt.stmt, 1, sceneId);
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  if (sqlite3_changes(db_) == 0) {
+    error = "Scene not found";
+    return false;
+  }
+
+  return true;
+}
+
+std::vector<ScenePatch> Database::loadScenePatches(int sceneId, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  std::vector<ScenePatch> patches;
+
+  Statement stmt;
+  if (!prepare(
+          db_,
+          "SELECT sv.fixture_id, sv.channel_index, sv.value, f.universe, f.start_address, f.channel_count, f.enabled "
+          "FROM scene_values sv JOIN fixtures f ON f.id = sv.fixture_id WHERE sv.scene_id = ? "
+          "ORDER BY f.sort_order, sv.fixture_id, sv.channel_index;",
+          stmt, error)) {
+    return patches;
+  }
+  sqlite3_bind_int(stmt.stmt, 1, sceneId);
+
+  while (sqlite3_step(stmt.stmt) == SQLITE_ROW) {
+    const int fixtureId = columnInt(stmt.stmt, 0);
+    const int channelIndex = columnInt(stmt.stmt, 1);
+    const int value = clampDmx(columnInt(stmt.stmt, 2));
+    const int universe = columnInt(stmt.stmt, 3);
+    const int startAddress = columnInt(stmt.stmt, 4);
+    const int channelCount = columnInt(stmt.stmt, 5);
+    const bool enabled = columnInt(stmt.stmt, 6) != 0;
+
+    if (!enabled || channelIndex < 1 || channelIndex > channelCount) {
+      continue;
+    }
+
+    ScenePatch patch;
+    patch.fixtureId = fixtureId;
+    patch.channelIndex = channelIndex;
+    patch.universe = universe;
+    patch.absoluteAddress = startAddress + channelIndex - 1;
+    patch.value = value;
+
+    if (patch.absoluteAddress < 1 || patch.absoluteAddress > 512) {
+      continue;
+    }
+
+    patches.push_back(std::move(patch));
+  }
+
+  return patches;
+}
+
+std::vector<MidiMapping> Database::listMidiMappings(std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  std::vector<MidiMapping> mappings;
+
+  Statement stmt;
+  if (!prepare(db_,
+               "SELECT control_id, source, input_id, type, channel, number FROM midi_mappings "
+               "ORDER BY control_id COLLATE NOCASE;",
+               stmt, error)) {
+    return mappings;
+  }
+
+  while (sqlite3_step(stmt.stmt) == SQLITE_ROW) {
+    MidiMapping mapping;
+    mapping.controlId = columnText(stmt.stmt, 0);
+    mapping.source = columnText(stmt.stmt, 1);
+    mapping.inputId = columnText(stmt.stmt, 2);
+    mapping.type = columnText(stmt.stmt, 3);
+    mapping.channel = std::clamp(columnInt(stmt.stmt, 4), 1, 16);
+    mapping.number = std::clamp(columnInt(stmt.stmt, 5), 0, 127);
+    mappings.push_back(std::move(mapping));
+  }
+
+  return mappings;
+}
+
+bool Database::upsertMidiMapping(const MidiMapping& mapping, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  const std::string source = mapping.source == "specific" ? "specific" : "all";
+  const std::string type = mapping.type == "note" ? "note" : "cc";
+  const int channel = std::clamp(mapping.channel, 1, 16);
+  const int number = std::clamp(mapping.number, 0, 127);
+  const std::string inputId = source == "specific" ? mapping.inputId : "";
+
+  Statement stmt;
+  if (!prepare(db_,
+               "INSERT INTO midi_mappings(control_id, source, input_id, type, channel, number) "
+               "VALUES(?, ?, ?, ?, ?, ?) "
+               "ON CONFLICT(control_id) DO UPDATE SET "
+               "source=excluded.source, input_id=excluded.input_id, type=excluded.type, "
+               "channel=excluded.channel, number=excluded.number;",
+               stmt, error)) {
+    return false;
+  }
+
+  sqlite3_bind_text(stmt.stmt, 1, mapping.controlId.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.stmt, 2, source.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.stmt, 3, inputId.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.stmt, 4, type.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt.stmt, 5, channel);
+  sqlite3_bind_int(stmt.stmt, 6, number);
+
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  return true;
+}
+
+bool Database::deleteMidiMapping(const std::string& controlId, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_, "DELETE FROM midi_mappings WHERE control_id = ?;", stmt, error)) {
+    return false;
+  }
+  sqlite3_bind_text(stmt.stmt, 1, controlId.c_str(), -1, SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  return true;
+}
+
+bool Database::setSetting(const std::string& key, const std::string& value, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_,
+               "INSERT INTO app_settings(key, value) VALUES(?, ?) "
+               "ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+               stmt, error)) {
+    return false;
+  }
+
+  sqlite3_bind_text(stmt.stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.stmt, 2, value.c_str(), -1, SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  return true;
+}
+
+bool Database::getSetting(const std::string& key, std::string& value, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_, "SELECT value FROM app_settings WHERE key = ?;", stmt, error)) {
+    return false;
+  }
+  sqlite3_bind_text(stmt.stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt.stmt) == SQLITE_ROW) {
+    value = columnText(stmt.stmt, 0);
+    return true;
+  }
+
+  value.clear();
   return false;
 }
 

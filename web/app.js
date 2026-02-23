@@ -2,6 +2,7 @@ const state = {
   templates: [],
   fixtures: [],
   groups: [],
+  scenes: [],
   dmx: null,
   audio: null,
   logs: [],
@@ -13,7 +14,6 @@ const state = {
     mappings: {},
     targets: {},
     learningControlId: null,
-    learningControlLabel: '',
   },
   performance: {
     fadeSeconds: 1.0,
@@ -149,6 +149,10 @@ const els = {
   generateChannelsBtn: document.getElementById('generate-channels-btn'),
   channelEditorList: document.getElementById('channel-editor-list'),
   templateList: document.getElementById('template-list'),
+  sceneForm: document.getElementById('scene-form'),
+  sceneName: document.getElementById('scene-name'),
+  sceneTransition: document.getElementById('scene-transition'),
+  sceneList: document.getElementById('scene-list'),
   fixtureBoard: document.getElementById('fixture-board'),
   groupBoard: document.getElementById('group-board'),
   learnFixtureSelect: document.getElementById('learn-fixture-select'),
@@ -276,19 +280,9 @@ function iconBadge(kindOrLabel, byLabel = false) {
   return `<span class="icon-badge" aria-hidden="true">${svg}</span>`;
 }
 
-const MIDI_STORAGE_KEY = 'tuxdmx.midi.v1';
 const LAYOUT_STORAGE_KEY = 'tuxdmx.layout.v1';
 const MIDI_REACTIVE_CONTROL_ID = 'audio:reactive';
 const PERFORMANCE_STORAGE_KEY = 'tuxdmx.performance.v1';
-const MIDI_PERFORMANCE_FADE_CONTROL_ID = 'perf:fadeSeconds';
-const MIDI_PERFORMANCE_ALL_ON_INTENSITY_CONTROL_ID = 'perf:allOnIntensity';
-const MIDI_PERFORMANCE_ALL_ON_CONTROL_ID = 'perf:allOn';
-const MIDI_PERFORMANCE_BLACKOUT_INTENSITY_CONTROL_ID = 'perf:blackoutIntensity';
-const MIDI_PERFORMANCE_BLACKOUT_CONTROL_ID = 'perf:blackout';
-const MIDI_PERFORMANCE_ROTATE_INTENSITY_CONTROL_ID = 'perf:rotateIntensity';
-const MIDI_PERFORMANCE_ROTATE_CONTROL_ID = 'perf:rotate';
-const MIDI_PERFORMANCE_STROBE_INTENSITY_CONTROL_ID = 'perf:strobeIntensity';
-const MIDI_PERFORMANCE_STROBE_CONTROL_ID = 'perf:strobe';
 
 function midiInputNameById(inputId) {
   const input = (state.midi.inputs || []).find((item) => item.id === inputId);
@@ -297,68 +291,24 @@ function midiInputNameById(inputId) {
 
 function describeMidiMapping(mapping) {
   if (!mapping) return 'MIDI: not mapped';
-  const source = mapping.source === 'specific' ? midiInputNameById(mapping.inputId) : 'Any input';
+  const source = mapping.source === 'specific' ? midiInputNameById(mapping.inputId) : 'All inputs';
   const type = mapping.type === 'cc' ? `CC${mapping.number}` : `NOTE${mapping.number}`;
   return `MIDI: ${source} • CH${mapping.channel} ${type}`;
 }
 
-function saveMidiPreferences() {
-  const payload = {
-    inputMode: state.midi.inputMode || 'all',
-    mappings: state.midi.mappings || {},
-  };
-  try {
-    window.localStorage.setItem(MIDI_STORAGE_KEY, JSON.stringify(payload));
-  } catch {
-    // Ignore localStorage write failures.
-  }
-}
-
-function loadMidiPreferences() {
-  try {
-    const raw = window.localStorage.getItem(MIDI_STORAGE_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null) return;
-
-    if (typeof parsed.inputMode === 'string' && parsed.inputMode.length) {
-      state.midi.inputMode = parsed.inputMode;
-    }
-
-    if (typeof parsed.mappings === 'object' && parsed.mappings !== null) {
-      const safeMappings = {};
-      Object.entries(parsed.mappings).forEach(([controlId, mapping]) => {
-        if (!mapping || typeof mapping !== 'object') return;
-        const type = mapping.type === 'note' ? 'note' : 'cc';
-        const source = mapping.source === 'specific' ? 'specific' : 'all';
-        const channel = Math.max(1, Math.min(16, Number(mapping.channel || 1)));
-        const number = Math.max(0, Math.min(127, Number(mapping.number || 0)));
-        safeMappings[controlId] = {
-          type,
-          source,
-          channel,
-          number,
-          inputId: source === 'specific' ? String(mapping.inputId || '') : '',
-        };
-      });
-      state.midi.mappings = safeMappings;
-    }
-  } catch {
-    // Ignore localStorage parse/read failures.
-  }
-}
-
 function setMidiLearnStatus() {
-  if (!state.midi.learningControlId) {
+  const controlId = state.midi.learningControlId || '';
+  if (!controlId) {
     els.midiLearnStatus.textContent = 'Learn: idle';
     return;
   }
-  els.midiLearnStatus.textContent = `Learn: waiting for MIDI message to map "${state.midi.learningControlLabel}"`;
+  const label = state.midi.targets?.[controlId]?.label || controlId;
+  els.midiLearnStatus.textContent = `Learn: waiting for server MIDI input to map "${label}"`;
 }
 
 function refreshMidiStatusText() {
   if (!state.midi.supported) {
-    els.midiStatus.textContent = 'MIDI unsupported in this browser (use Chrome/Edge).';
+    els.midiStatus.textContent = `Server MIDI unavailable (backend: ${state.midi.backend || 'none'})`;
     return;
   }
 
@@ -366,7 +316,7 @@ function refreshMidiStatusText() {
   const sourceText = state.midi.inputMode === 'all'
     ? 'all inputs'
     : midiInputNameById(state.midi.inputMode);
-  els.midiStatus.textContent = `Inputs: ${connected} • Listening: ${sourceText}`;
+  els.midiStatus.textContent = `Server MIDI • Inputs: ${connected} • Listening: ${sourceText}`;
 }
 
 function refreshMidiInputSelectUi() {
@@ -377,7 +327,7 @@ function refreshMidiInputSelectUi() {
   if (!state.midi.supported) {
     const option = document.createElement('option');
     option.value = 'all';
-    option.textContent = 'MIDI not supported';
+    option.textContent = 'Server MIDI unavailable';
     els.midiInputSelect.appendChild(option);
     els.midiInputSelect.disabled = true;
     refreshMidiStatusText();
@@ -409,6 +359,35 @@ function refreshMidiInputSelectUi() {
   updateAllMidiTargetUi();
 }
 
+function syncMidiStateFromServer(midi = {}) {
+  state.midi.supported = Boolean(midi.supported);
+  state.midi.backend = String(midi.backend || '');
+  state.midi.inputMode = String(midi.inputMode || 'all');
+  state.midi.learningControlId = String(midi.learningControlId || '');
+  state.midi.inputs = Array.isArray(midi.inputs) ? midi.inputs.map((input) => ({
+    id: String(input.id || ''),
+    name: String(input.name || ''),
+  })) : [];
+
+  const byId = {};
+  const mappings = Array.isArray(midi.mappings) ? midi.mappings : [];
+  mappings.forEach((mapping) => {
+    const controlId = String(mapping.controlId || '').trim();
+    if (!controlId) return;
+    byId[controlId] = {
+      source: mapping.source === 'specific' ? 'specific' : 'all',
+      inputId: String(mapping.inputId || ''),
+      type: mapping.type === 'note' ? 'note' : 'cc',
+      channel: Math.max(1, Math.min(16, Number(mapping.channel || 1))),
+      number: Math.max(0, Math.min(127, Number(mapping.number || 0))),
+    };
+  });
+  state.midi.mappings = byId;
+
+  refreshMidiInputSelectUi();
+  updateAllMidiTargetUi();
+}
+
 function updateMidiTargetUi(controlId) {
   const target = state.midi.targets[controlId];
   if (!target) return;
@@ -436,7 +415,6 @@ function updateAllMidiTargetUi() {
 function registerMidiTarget(controlId, config) {
   state.midi.targets[controlId] = {
     ...config,
-    lastAppliedValue: undefined,
   };
   updateMidiTargetUi(controlId);
 }
@@ -445,52 +423,39 @@ function unregisterMidiTargetsByPrefix(prefix) {
   Object.keys(state.midi.targets).forEach((controlId) => {
     if (!controlId.startsWith(prefix)) return;
     delete state.midi.targets[controlId];
-    if (state.midi.learningControlId === controlId) {
-      state.midi.learningControlId = null;
-      state.midi.learningControlLabel = '';
-      setMidiLearnStatus();
-    }
+    setMidiLearnStatus();
   });
 }
 
-function startMidiLearn(controlId, label) {
+async function startMidiLearn(controlId, label) {
+  await api('/api/midi/learn/start', {
+    method: 'POST',
+    body: { control_id: controlId },
+  });
   state.midi.learningControlId = controlId;
-  state.midi.learningControlLabel = label;
   setMidiLearnStatus();
   updateAllMidiTargetUi();
-  showToast(`MIDI learn armed: ${label}`);
+  showToast(`MIDI learn armed on server: ${label}`);
 }
 
-function stopMidiLearn() {
-  state.midi.learningControlId = null;
-  state.midi.learningControlLabel = '';
-  setMidiLearnStatus();
-  updateAllMidiTargetUi();
-}
-
-function clearMidiMapping(controlId, { notify = true } = {}) {
+async function clearMidiMapping(controlId, { notify = true } = {}) {
   if (!state.midi.mappings[controlId]) return;
+  await api('/api/midi/mappings/clear', {
+    method: 'POST',
+    body: { control_id: controlId },
+  });
   delete state.midi.mappings[controlId];
-  if (controlId === MIDI_PERFORMANCE_ALL_ON_CONTROL_ID) {
-    setEffectSource('allOn', 'midi', false);
-  } else if (controlId === MIDI_PERFORMANCE_BLACKOUT_CONTROL_ID) {
-    setEffectSource('blackout', 'midi', false);
-  } else if (controlId === MIDI_PERFORMANCE_ROTATE_CONTROL_ID) {
-    setEffectSource('rotate', 'midi', false);
-  } else if (controlId === MIDI_PERFORMANCE_STROBE_CONTROL_ID) {
-    setEffectSource('strobe', 'midi', false);
-  }
   if (state.midi.learningControlId === controlId) {
-    stopMidiLearn();
+    state.midi.learningControlId = '';
+    setMidiLearnStatus();
   }
-  saveMidiPreferences();
   updateMidiTargetUi(controlId);
   if (notify) {
     showToast('MIDI mapping cleared');
   }
 }
 
-function createMidiBindRow(controlId, label, kind, onMidiValue) {
+function createMidiBindRow(controlId, label, kind) {
   const row = document.createElement('div');
   row.className = 'midi-bind-row';
 
@@ -504,13 +469,17 @@ function createMidiBindRow(controlId, label, kind, onMidiValue) {
   learnBtn.type = 'button';
   learnBtn.className = 'btn ghost';
   learnBtn.textContent = 'MIDI Learn';
-  learnBtn.addEventListener('click', () => startMidiLearn(controlId, label));
+  learnBtn.addEventListener('click', () => {
+    startMidiLearn(controlId, label).catch((err) => showToast(err.message, 'error'));
+  });
 
   const clearBtn = document.createElement('button');
   clearBtn.type = 'button';
   clearBtn.className = 'btn ghost';
   clearBtn.textContent = 'Clear';
-  clearBtn.addEventListener('click', () => clearMidiMapping(controlId));
+  clearBtn.addEventListener('click', () => {
+    clearMidiMapping(controlId).catch((err) => showToast(err.message, 'error'));
+  });
 
   actions.append(learnBtn, clearBtn);
   row.append(mappingLabel, actions);
@@ -518,7 +487,6 @@ function createMidiBindRow(controlId, label, kind, onMidiValue) {
   registerMidiTarget(controlId, {
     label,
     kind,
-    onMidiValue,
     rowEl: row,
     labelEl: mappingLabel,
     clearBtn,
@@ -527,154 +495,10 @@ function createMidiBindRow(controlId, label, kind, onMidiValue) {
   return row;
 }
 
-function normalizeMidiMessage(event) {
-  const data = event.data;
-  if (!data || data.length < 2) return null;
-
-  const status = Number(data[0]);
-  const data1 = Number(data[1]);
-  const data2 = Number(data[2] || 0);
-
-  const command = status & 0xF0;
-  const channel = (status & 0x0F) + 1;
-
-  if (command === 0xB0) {
-    return {
-      type: 'cc',
-      channel,
-      number: data1,
-      value: data2,
-      on: data2 >= 64,
-      mappedValue: Math.round((data2 / 127) * 255),
-    };
-  }
-
-  if (command === 0x90) {
-    const on = data2 > 0;
-    return {
-      type: 'note',
-      channel,
-      number: data1,
-      value: data2,
-      on,
-      mappedValue: on ? 255 : 0,
-    };
-  }
-
-  if (command === 0x80) {
-    return {
-      type: 'note',
-      channel,
-      number: data1,
-      value: 0,
-      on: false,
-      mappedValue: 0,
-    };
-  }
-
-  return null;
-}
-
-function mappingMatchesMessage(mapping, midiMessage, sourceInputId) {
-  if (!mapping || !midiMessage) return false;
-  if (mapping.type !== midiMessage.type) return false;
-  if (Number(mapping.channel) !== Number(midiMessage.channel)) return false;
-  if (Number(mapping.number) !== Number(midiMessage.number)) return false;
-  if (mapping.source === 'specific' && mapping.inputId !== sourceInputId) return false;
-  return true;
-}
-
-async function processMidiMessage(event) {
-  const midiMessage = normalizeMidiMessage(event);
-  if (!midiMessage) return;
-
-  const sourceInputId = event.currentTarget?.id || event.target?.id || '';
-
-  if (state.midi.inputMode !== 'all' && sourceInputId !== state.midi.inputMode) {
-    return;
-  }
-
-  if (state.midi.learningControlId) {
-    const controlId = state.midi.learningControlId;
-    const mapping = {
-      source: state.midi.inputMode === 'all' ? 'all' : 'specific',
-      inputId: state.midi.inputMode === 'all' ? '' : sourceInputId,
-      type: midiMessage.type,
-      channel: midiMessage.channel,
-      number: midiMessage.number,
-    };
-
-    state.midi.mappings[controlId] = mapping;
-    saveMidiPreferences();
-    stopMidiLearn();
-    updateMidiTargetUi(controlId);
-    showToast(`Mapped ${state.midi.targets[controlId]?.label || controlId} to ${describeMidiMapping(mapping)}`);
-    return;
-  }
-
-  const mappingEntries = Object.entries(state.midi.mappings);
-  for (const [controlId, mapping] of mappingEntries) {
-    const target = state.midi.targets[controlId];
-    if (!target) continue;
-    if (!mappingMatchesMessage(mapping, midiMessage, sourceInputId)) continue;
-
-    const nextValue = target.kind === 'toggle' ? midiMessage.on : midiMessage.mappedValue;
-    if (target.lastAppliedValue === nextValue) continue;
-    target.lastAppliedValue = nextValue;
-
-    try {
-      await target.onMidiValue(nextValue, midiMessage);
-    } catch (err) {
-      showToast(err.message || 'MIDI mapping action failed', 'error');
-    }
-  }
-}
-
-function attachMidiInputListeners() {
-  if (!state.midi.access) return;
-  for (const input of state.midi.access.inputs.values()) {
-    input.onmidimessage = (event) => {
-      processMidiMessage(event).catch((err) => {
-        showToast(err.message || 'MIDI processing error', 'error');
-      });
-    };
-  }
-}
-
-function refreshMidiInputsFromAccess() {
-  if (!state.midi.access) return;
-
-  const inputs = [];
-  for (const input of state.midi.access.inputs.values()) {
-    if (input.state !== 'connected') continue;
-    inputs.push({
-      id: input.id,
-      name: input.name || `MIDI Input ${inputs.length + 1}`,
-    });
-  }
-  state.midi.inputs = inputs;
-
-  attachMidiInputListeners();
-  refreshMidiInputSelectUi();
-}
-
 async function initializeMidi() {
-  loadMidiPreferences();
-
-  if (!navigator.requestMIDIAccess) {
-    state.midi.supported = false;
-    refreshMidiInputSelectUi();
-    return;
-  }
-
   try {
-    const access = await navigator.requestMIDIAccess({ sysex: false });
-    state.midi.supported = true;
-    state.midi.access = access;
-    access.onstatechange = () => {
-      refreshMidiInputsFromAccess();
-    };
-    refreshMidiInputsFromAccess();
+    const data = await api('/api/midi');
+    syncMidiStateFromServer(data.midi || {});
   } catch {
     state.midi.supported = false;
     refreshMidiInputSelectUi();
@@ -1223,105 +1047,21 @@ function initializePerformanceControls() {
   bindMomentaryPerformanceButton(els.performanceRotateBtn, 'rotate');
   bindMomentaryPerformanceButton(els.performanceStrobeBtn, 'strobe');
 
-  els.performanceFadeMidiSlot.appendChild(
-    createMidiBindRow(
-      MIDI_PERFORMANCE_FADE_CONTROL_ID,
-      'Performance Fade Seconds',
-      'continuous',
-      async (value) => {
-        const seconds = 0.05 + ((Math.max(0, Math.min(255, Number(value || 0))) / 255) * 4.95);
-        setPerformanceFadeSeconds(seconds);
-      },
-    ),
-  );
-
-  els.performanceAllOnIntensityMidiSlot.appendChild(
-    createMidiBindRow(
-      MIDI_PERFORMANCE_ALL_ON_INTENSITY_CONTROL_ID,
-      'Global Lift Strength',
-      'continuous',
-      async (value) => {
-        setPerformanceIntensity('allOn', Math.max(0, Math.min(255, Number(value || 0))) / 255);
-      },
-    ),
-  );
-
-  els.performanceAllOnMidiSlot.appendChild(
-    createMidiBindRow(
-      MIDI_PERFORMANCE_ALL_ON_CONTROL_ID,
-      'Global Lift Hold',
-      'toggle',
-      async (enabled) => {
-        setEffectSource('allOn', 'midi', Boolean(enabled));
-      },
-    ),
-  );
-
-  els.performanceBlackoutIntensityMidiSlot.appendChild(
-    createMidiBindRow(
-      MIDI_PERFORMANCE_BLACKOUT_INTENSITY_CONTROL_ID,
-      'Blackout Strength',
-      'continuous',
-      async (value) => {
-        setPerformanceIntensity('blackout', Math.max(0, Math.min(255, Number(value || 0))) / 255);
-      },
-    ),
-  );
-
-  els.performanceBlackoutMidiSlot.appendChild(
-    createMidiBindRow(
-      MIDI_PERFORMANCE_BLACKOUT_CONTROL_ID,
-      'Blackout Hold',
-      'toggle',
-      async (enabled) => {
-        setEffectSource('blackout', 'midi', Boolean(enabled));
-      },
-    ),
-  );
-
-  els.performanceRotateIntensityMidiSlot.appendChild(
-    createMidiBindRow(
-      MIDI_PERFORMANCE_ROTATE_INTENSITY_CONTROL_ID,
-      'Rotate Intensity',
-      'continuous',
-      async (value) => {
-        setPerformanceIntensity('rotate', Math.max(0, Math.min(255, Number(value || 0))) / 255);
-      },
-    ),
-  );
-
-  els.performanceRotateMidiSlot.appendChild(
-    createMidiBindRow(
-      MIDI_PERFORMANCE_ROTATE_CONTROL_ID,
-      'Rotate Hold',
-      'toggle',
-      async (enabled) => {
-        setEffectSource('rotate', 'midi', Boolean(enabled));
-      },
-    ),
-  );
-
-  els.performanceStrobeIntensityMidiSlot.appendChild(
-    createMidiBindRow(
-      MIDI_PERFORMANCE_STROBE_INTENSITY_CONTROL_ID,
-      'Strobe Strength',
-      'continuous',
-      async (value) => {
-        setPerformanceIntensity('strobe', Math.max(0, Math.min(255, Number(value || 0))) / 255);
-      },
-    ),
-  );
-
-  els.performanceStrobeMidiSlot.appendChild(
-    createMidiBindRow(
-      MIDI_PERFORMANCE_STROBE_CONTROL_ID,
-      'Strobe Hold',
-      'toggle',
-      async (enabled) => {
-        setEffectSource('strobe', 'midi', Boolean(enabled));
-      },
-    ),
-  );
+  [
+    els.performanceFadeMidiSlot,
+    els.performanceAllOnIntensityMidiSlot,
+    els.performanceAllOnMidiSlot,
+    els.performanceBlackoutIntensityMidiSlot,
+    els.performanceBlackoutMidiSlot,
+    els.performanceRotateIntensityMidiSlot,
+    els.performanceRotateMidiSlot,
+    els.performanceStrobeIntensityMidiSlot,
+    els.performanceStrobeMidiSlot,
+  ].forEach((slot) => {
+    if (slot) {
+      slot.innerHTML = '';
+    }
+  });
 
   updatePerformanceButtonVisuals();
 }
@@ -1548,9 +1288,12 @@ function renderTemplates(templates) {
   updatePatchRangePreview();
 }
 
-function renderStatus(dmx, audio) {
+function renderStatus(dmx, audio, midi = null) {
   state.dmx = dmx;
   state.audio = audio;
+  if (midi) {
+    syncMidiStateFromServer(midi);
+  }
 
   if (dmx.connected) {
     els.deviceStatus.textContent = 'ENTTEC DMX USB Pro detected';
@@ -2268,14 +2011,137 @@ function renderGroups(groups) {
   });
 }
 
+function renderScenes(scenes) {
+  state.scenes = Array.isArray(scenes) ? scenes : [];
+  if (!els.sceneList) return;
+  els.sceneList.innerHTML = '';
+  unregisterMidiTargetsByPrefix('scene:');
+
+  if (!state.scenes.length) {
+    const empty = document.createElement('p');
+    empty.textContent = 'No scenes yet. Set your lights, enter a name, then save.';
+    empty.style.color = '#4f6660';
+    els.sceneList.appendChild(empty);
+    return;
+  }
+
+  state.scenes.forEach((scene) => {
+    const row = document.createElement('article');
+    row.className = 'scene-row';
+
+    const head = document.createElement('div');
+    head.className = 'scene-row-head';
+    const title = document.createElement('strong');
+    title.textContent = scene.name;
+    const count = document.createElement('span');
+    count.textContent = `${Number(scene.valueCount || 0)} channels`;
+    count.style.color = '#4f6660';
+    count.style.fontSize = '0.75rem';
+    head.append(title, count);
+
+    const controls = document.createElement('div');
+    controls.className = 'scene-row-controls';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = scene.name || '';
+
+    const transitionInput = document.createElement('input');
+    transitionInput.type = 'number';
+    transitionInput.min = '0';
+    transitionInput.max = '60';
+    transitionInput.step = '0.01';
+    transitionInput.value = Number(scene.transitionSeconds || 1).toFixed(2);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'btn ghost';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', async () => {
+      try {
+        await api(`/api/scenes/${scene.id}/update`, {
+          method: 'POST',
+          body: {
+            name: nameInput.value.trim(),
+            transition_seconds: String(Number(transitionInput.value || 1)),
+          },
+        });
+        await loadState({ silent: true });
+        showToast(`Updated scene "${nameInput.value.trim()}"`);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+
+    const recallBtn = document.createElement('button');
+    recallBtn.type = 'button';
+    recallBtn.className = 'btn primary';
+    recallBtn.textContent = 'Recall';
+    recallBtn.addEventListener('click', async () => {
+      try {
+        await api(`/api/scenes/${scene.id}/recall`, {
+          method: 'POST',
+          body: { transition_seconds: String(Number(transitionInput.value || scene.transitionSeconds || 1)) },
+        });
+        showToast(`Recalling "${scene.name}"`);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+
+    const captureBtn = document.createElement('button');
+    captureBtn.type = 'button';
+    captureBtn.className = 'btn ghost';
+    captureBtn.textContent = 'Capture';
+    captureBtn.addEventListener('click', async () => {
+      try {
+        await api(`/api/scenes/${scene.id}/capture`, {
+          method: 'POST',
+        });
+        await loadState({ silent: true });
+        showToast(`Captured current values into "${scene.name}"`);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'btn danger';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', async () => {
+      if (!window.confirm(`Delete scene "${scene.name}"?`)) return;
+      try {
+        await api(`/api/scenes/${scene.id}/delete`, { method: 'POST' });
+        await loadState({ silent: true });
+        showToast(`Deleted scene "${scene.name}"`);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+
+    controls.append(nameInput, transitionInput, saveBtn, recallBtn, captureBtn, deleteBtn);
+
+    const midiRow = createMidiBindRow(
+      `scene:${scene.id}:recall`,
+      `Scene Recall: ${scene.name}`,
+      'toggle',
+    );
+
+    row.append(head, controls, midiRow);
+    els.sceneList.appendChild(row);
+  });
+}
+
 async function loadState({ silent = false } = {}) {
   try {
     const data = await api('/api/state');
-    renderStatus(data.dmx, data.audio);
+    renderStatus(data.dmx, data.audio, data.midi || null);
     renderDebugLogs(data.logs || []);
     renderTemplates(data.templates || []);
     renderFixtures(data.fixtures || []);
     renderGroups(data.groups || []);
+    renderScenes(data.scenes || []);
   } catch (err) {
     if (!silent) {
       showToast(err.message, 'error');
@@ -2398,6 +2264,39 @@ async function onGroupSubmit(event) {
     els.groupForm.reset();
     await loadState({ silent: true });
     showToast(`Group "${name}" created`);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function onSceneSubmit(event) {
+  event.preventDefault();
+
+  const name = String(els.sceneName?.value || '').trim();
+  const transition = Number(els.sceneTransition?.value || 1);
+  if (!name) {
+    showToast('Scene name is required', 'error');
+    return;
+  }
+  if (!Number.isFinite(transition) || transition < 0 || transition > 60) {
+    showToast('Scene transition must be between 0 and 60 seconds', 'error');
+    return;
+  }
+
+  try {
+    await api('/api/scenes', {
+      method: 'POST',
+      body: {
+        name,
+        transition_seconds: String(transition),
+      },
+    });
+    els.sceneForm.reset();
+    if (els.sceneTransition) {
+      els.sceneTransition.value = '1.00';
+    }
+    await loadState({ silent: true });
+    showToast(`Saved scene "${name}"`);
   } catch (err) {
     showToast(err.message, 'error');
   }
@@ -2575,25 +2474,6 @@ async function toggleReactiveMode() {
     showToast(`Music reactive ${enabled ? 'enabled' : 'disabled'}`);
   } catch (err) {
     showToast(err.message, 'error');
-  }
-}
-
-async function setReactiveModeFromMidi(enabled) {
-  const desired = Boolean(enabled);
-  const current = Boolean(state.audio?.reactiveMode);
-  if (current === desired) return;
-
-  if (state.midi.reactiveRequestInFlight) return;
-  state.midi.reactiveRequestInFlight = true;
-
-  try {
-    await api('/api/audio/reactive', {
-      method: 'POST',
-      body: { enabled: desired ? '1' : '0' },
-    });
-    await loadState({ silent: true });
-  } finally {
-    state.midi.reactiveRequestInFlight = false;
   }
 }
 
@@ -2877,6 +2757,9 @@ function installEventListeners() {
   els.templateForm.addEventListener('submit', onTemplateSubmit);
   els.fixtureForm.addEventListener('submit', onFixtureSubmit);
   els.groupForm.addEventListener('submit', onGroupSubmit);
+  if (els.sceneForm) {
+    els.sceneForm.addEventListener('submit', onSceneSubmit);
+  }
   els.learnCreateForm.addEventListener('submit', onLearnCreateSubmit);
 
   els.addChannelBtn.addEventListener('click', () => {
@@ -2935,16 +2818,26 @@ function installEventListeners() {
     });
   }
   els.audioReactiveMidiLearn.addEventListener('click', () => {
-    startMidiLearn(MIDI_REACTIVE_CONTROL_ID, 'Music Reactive');
+    startMidiLearn(MIDI_REACTIVE_CONTROL_ID, 'Music Reactive').catch((err) => showToast(err.message, 'error'));
   });
   els.audioReactiveMidiClear.addEventListener('click', () => {
-    clearMidiMapping(MIDI_REACTIVE_CONTROL_ID);
+    clearMidiMapping(MIDI_REACTIVE_CONTROL_ID).catch((err) => showToast(err.message, 'error'));
   });
 
-  els.midiInputSelect.addEventListener('change', () => {
-    state.midi.inputMode = els.midiInputSelect.value || 'all';
-    saveMidiPreferences();
-    refreshMidiStatusText();
+  els.midiInputSelect.addEventListener('change', async () => {
+    const mode = els.midiInputSelect.value || 'all';
+    try {
+      await api('/api/midi/input-mode', {
+        method: 'POST',
+        body: { mode },
+      });
+      state.midi.inputMode = mode;
+      refreshMidiStatusText();
+      showToast(`MIDI listening mode: ${mode === 'all' ? 'All inputs' : midiInputNameById(mode)}`);
+    } catch (err) {
+      showToast(err.message, 'error');
+      refreshMidiInputSelectUi();
+    }
   });
 
   els.newUniverseNumber.addEventListener('keydown', (event) => {
@@ -3043,6 +2936,7 @@ function installEventListeners() {
     els.templateForm,
     els.fixtureForm,
     els.groupForm,
+    els.sceneForm,
     els.learnCreateForm,
     learnEditorRoot,
   ];
@@ -3059,9 +2953,6 @@ async function boot() {
   registerMidiTarget(MIDI_REACTIVE_CONTROL_ID, {
     label: 'Music Reactive',
     kind: 'toggle',
-    onMidiValue: async (enabled) => {
-      await setReactiveModeFromMidi(Boolean(enabled));
-    },
     labelEl: els.audioReactiveMidiLabel,
     clearBtn: els.audioReactiveMidiClear,
   });

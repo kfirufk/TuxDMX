@@ -48,6 +48,19 @@ class Database {
   bool deleteFixture(int fixtureId, std::string& error);
   bool reorderFixtures(const std::vector<int>& fixtureIds, std::string& error);
 
+  std::vector<SceneDefinition> listScenes(std::string& error);
+  int createScene(const std::string& name, float transitionSeconds, std::string& error);
+  bool updateScene(int sceneId, const std::string& name, float transitionSeconds, std::string& error);
+  bool captureScene(int sceneId, std::string& error);
+  bool deleteScene(int sceneId, std::string& error);
+  std::vector<ScenePatch> loadScenePatches(int sceneId, std::string& error);
+
+  std::vector<MidiMapping> listMidiMappings(std::string& error);
+  bool upsertMidiMapping(const MidiMapping& mapping, std::string& error);
+  bool deleteMidiMapping(const std::string& controlId, std::string& error);
+  bool setSetting(const std::string& key, const std::string& value, std::string& error);
+  bool getSetting(const std::string& key, std::string& value, std::string& error);
+
   int createGroup(const std::string& name, std::string& error);
   bool setGroupFixtures(int groupId, const std::vector<int>& fixtureIds, std::string& error);
   std::vector<FixtureGroup> listGroups(std::string& error);

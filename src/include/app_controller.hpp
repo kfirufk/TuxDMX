@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <mutex>
 #include <random>
@@ -13,6 +14,7 @@
 #include "database.hpp"
 #include "dmx_engine.hpp"
 #include "http_server.hpp"
+#include "midi_engine.hpp"
 
 namespace tuxdmx {
 
@@ -39,6 +41,10 @@ class AppController {
   void rebuildAllUniversesFromDatabase();
   void persistBlackoutToDatabase();
   void onAudioMetrics(const AudioMetrics& metrics);
+  void onMidiMessage(const MidiMessage& message);
+  void refreshMidiMappingsFromDatabase();
+  bool applyMidiControl(const std::string& controlId, int value, bool on, std::string& error);
+  bool startSceneTransition(int sceneId, float transitionSeconds, std::string& error);
 
   struct FixtureResolvedView {
     FixtureInstance fixture;
@@ -62,6 +68,7 @@ class AppController {
   Database db_;
   DmxEngine dmx_;
   AudioEngine audio_;
+  MidiEngine midi_;
 
   std::mutex reactiveMutex_;
   std::mt19937 reactiveRng_;
@@ -69,6 +76,14 @@ class AppController {
   std::chrono::steady_clock::time_point lastReactiveApply_{};
   std::atomic<float> reactiveVolumeThreshold_{0.12F};
   std::atomic<int> reactiveProfile_{0};  // 0=balanced, 1=volume_blackout
+
+  std::mutex midiMutex_;
+  std::string midiInputMode_ = "all";  // all | input id
+  std::string midiLearningControlId_;
+  std::unordered_map<std::string, MidiMapping> midiMappings_;
+  std::unordered_map<std::string, int> midiLastAppliedValues_;
+
+  std::atomic<std::uint64_t> sceneTransitionToken_{0};
 };
 
 }  // namespace tuxdmx

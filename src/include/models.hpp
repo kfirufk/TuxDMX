@@ -81,4 +81,44 @@ struct ChannelPatch {
   int value = 0;
 };
 
+struct SceneDefinition {
+  int id = 0;
+  std::string name;
+  float transitionSeconds = 1.0F;
+  int valueCount = 0;
+};
+
+struct ScenePatch {
+  int fixtureId = 0;
+  int channelIndex = 1;
+  int universe = 1;
+  int absoluteAddress = 1;
+  int value = 0;
+};
+
+struct MidiInputPort {
+  std::string id;
+  std::string name;
+};
+
+struct MidiMapping {
+  std::string controlId;
+  std::string source = "all";  // all | specific
+  std::string inputId;         // empty if source == all
+  std::string type = "cc";     // cc | note
+  int channel = 1;
+  int number = 0;
+};
+
+struct MidiMessage {
+  std::string inputId;
+  std::string inputName;
+  std::string type = "cc";
+  int channel = 1;
+  int number = 0;
+  int value = 0;
+  bool on = false;
+  int mappedValue = 0;
+};
+
 }  // namespace tuxdmx

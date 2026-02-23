@@ -7,6 +7,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -26,6 +27,28 @@ bool getRequiredInt(const std::unordered_map<std::string, std::string>& form, co
   }
   if (!parseInt(it->second, value)) {
     error = "Invalid integer field: " + key;
+    return false;
+  }
+  return true;
+}
+
+bool getRequiredFloat(const std::unordered_map<std::string, std::string>& form, const std::string& key, float& value,
+                      std::string& error) {
+  auto it = form.find(key);
+  if (it == form.end()) {
+    error = "Missing field: " + key;
+    return false;
+  }
+  try {
+    std::size_t idx = 0;
+    const float parsed = std::stof(it->second, &idx);
+    if (idx != it->second.size()) {
+      error = "Invalid float field: " + key;
+      return false;
+    }
+    value = parsed;
+  } catch (...) {
+    error = "Invalid float field: " + key;
     return false;
   }
   return true;
@@ -128,6 +151,28 @@ std::vector<int> parseCsvInts(std::string_view csv) {
   }
 
   return values;
+}
+
+std::vector<std::string> splitBy(std::string_view text, char delimiter) {
+  std::vector<std::string> parts;
+  std::size_t start = 0;
+  while (start <= text.size()) {
+    const auto pos = text.find(delimiter, start);
+    if (pos == std::string_view::npos) {
+      const auto token = text.substr(start);
+      if (!token.empty()) {
+        parts.push_back(std::string(token));
+      }
+      break;
+    }
+
+    const auto token = text.substr(start, pos - start);
+    if (!token.empty()) {
+      parts.push_back(std::string(token));
+    }
+    start = pos + 1;
+  }
+  return parts;
 }
 
 struct DmxDirectPatch {
@@ -425,6 +470,60 @@ void appendLogArrayJson(std::ostringstream& ss, const std::vector<LogEntry>& log
   ss << ']';
 }
 
+void appendSceneArrayJson(std::ostringstream& ss, const std::vector<SceneDefinition>& scenes) {
+  ss << '[';
+  bool first = true;
+  for (const auto& scene : scenes) {
+    if (!first) {
+      ss << ',';
+    }
+    first = false;
+    ss << '{';
+    ss << "\"id\":" << scene.id << ',';
+    ss << "\"name\":\"" << jsonEscape(scene.name) << "\",";
+    ss << "\"transitionSeconds\":" << scene.transitionSeconds << ',';
+    ss << "\"valueCount\":" << scene.valueCount;
+    ss << '}';
+  }
+  ss << ']';
+}
+
+void appendMidiInputArrayJson(std::ostringstream& ss, const std::vector<MidiInputPort>& inputs) {
+  ss << '[';
+  bool first = true;
+  for (const auto& input : inputs) {
+    if (!first) {
+      ss << ',';
+    }
+    first = false;
+    ss << '{';
+    ss << "\"id\":\"" << jsonEscape(input.id) << "\",";
+    ss << "\"name\":\"" << jsonEscape(input.name) << "\"";
+    ss << '}';
+  }
+  ss << ']';
+}
+
+void appendMidiMappingArrayJson(std::ostringstream& ss, const std::vector<MidiMapping>& mappings) {
+  ss << '[';
+  bool first = true;
+  for (const auto& mapping : mappings) {
+    if (!first) {
+      ss << ',';
+    }
+    first = false;
+    ss << '{';
+    ss << "\"controlId\":\"" << jsonEscape(mapping.controlId) << "\",";
+    ss << "\"source\":\"" << jsonEscape(mapping.source) << "\",";
+    ss << "\"inputId\":\"" << jsonEscape(mapping.inputId) << "\",";
+    ss << "\"type\":\"" << jsonEscape(mapping.type) << "\",";
+    ss << "\"channel\":" << mapping.channel << ',';
+    ss << "\"number\":" << mapping.number;
+    ss << '}';
+  }
+  ss << ']';
+}
+
 }  // namespace
 
 AppController::AppController(std::string dbPath, std::string webRoot)
@@ -455,10 +554,29 @@ bool AppController::initialize(std::string& error) {
   audio_.setTickCallback([this](const AudioMetrics& metrics) { onAudioMetrics(metrics); });
   audio_.start();
 
+  {
+    std::string inputMode;
+    std::string settingError;
+    if (db_.getSetting("midi.input_mode", inputMode, settingError) && !trim(inputMode).empty()) {
+      std::scoped_lock lock(midiMutex_);
+      midiInputMode_ = trim(inputMode);
+    } else if (!settingError.empty()) {
+      logMessage(LogLevel::Warn, "midi", "Failed to load input mode: " + settingError);
+    }
+  }
+
+  refreshMidiMappingsFromDatabase();
+  midi_.setMessageCallback([this](const MidiMessage& message) { onMidiMessage(message); });
+  midi_.start();
+  logMessage(LogLevel::Info, "midi",
+             std::string("Server MIDI backend: ") + midi_.backendName() + (midi_.supported() ? "" : " (disabled)"));
+
   return true;
 }
 
 void AppController::shutdown() {
+  sceneTransitionToken_.fetch_add(1);
+  midi_.stop();
   audio_.stop();
   persistBlackoutToDatabase();
   dmx_.stop();
@@ -546,6 +664,21 @@ std::string AppController::buildStatusJson() {
   const int defaultInputDeviceId = audio_.defaultInputDeviceId();
   const int selectedInputDeviceId = audio_.selectedInputDeviceId();
   const int activeInputDeviceId = audio_.activeInputDeviceId();
+  const auto midiInputs = midi_.inputPorts();
+  std::vector<MidiMapping> midiMappings;
+  std::string midiInputMode;
+  std::string midiLearningControlId;
+  {
+    std::scoped_lock lock(midiMutex_);
+    midiInputMode = midiInputMode_;
+    midiLearningControlId = midiLearningControlId_;
+    midiMappings.reserve(midiMappings_.size());
+    for (const auto& [_, mapping] : midiMappings_) {
+      midiMappings.push_back(mapping);
+    }
+  }
+  std::sort(midiMappings.begin(), midiMappings.end(),
+            [](const MidiMapping& a, const MidiMapping& b) { return a.controlId < b.controlId; });
 
   std::ostringstream ss;
   ss << "{\"ok\":true,\"dmx\":{";
@@ -587,6 +720,15 @@ std::string AppController::buildStatusJson() {
   ss << "\"beat\":" << jsonBool(metrics.beat) << ',';
   ss << "\"reactiveVolumeThreshold\":" << reactiveVolumeThreshold << ',';
   ss << "\"reactiveProfile\":\"" << jsonEscape(reactiveProfile) << "\"";
+  ss << "},\"midi\":{";
+  ss << "\"supported\":" << jsonBool(midi_.supported()) << ',';
+  ss << "\"backend\":\"" << jsonEscape(midi_.backendName()) << "\",";
+  ss << "\"inputMode\":\"" << jsonEscape(midiInputMode) << "\",";
+  ss << "\"learningControlId\":\"" << jsonEscape(midiLearningControlId) << "\",";
+  ss << "\"inputs\":";
+  appendMidiInputArrayJson(ss, midiInputs);
+  ss << ",\"mappings\":";
+  appendMidiMappingArrayJson(ss, midiMappings);
   ss << "}}";
 
   return ss.str();
@@ -609,6 +751,11 @@ std::string AppController::buildStateJson() {
     return "{\"ok\":false,\"error\":\"" + jsonEscape(error) + "\"}";
   }
 
+  const auto scenes = db_.listScenes(error);
+  if (!error.empty()) {
+    return "{\"ok\":false,\"error\":\"" + jsonEscape(error) + "\"}";
+  }
+
   std::unordered_map<int, FixtureTemplate> templateMap;
   for (const auto& t : templates) {
     templateMap[t.id] = t;
@@ -624,6 +771,21 @@ std::string AppController::buildStateJson() {
   const int activeInputDeviceId = audio_.activeInputDeviceId();
   const auto outputUniverse = dmx_.outputUniverse();
   const auto universes = sortedUniverseList(fixtures, dmx_.knownUniverses());
+  const auto midiInputs = midi_.inputPorts();
+  std::vector<MidiMapping> midiMappings;
+  std::string midiInputMode;
+  std::string midiLearningControlId;
+  {
+    std::scoped_lock lock(midiMutex_);
+    midiInputMode = midiInputMode_;
+    midiLearningControlId = midiLearningControlId_;
+    midiMappings.reserve(midiMappings_.size());
+    for (const auto& [_, mapping] : midiMappings_) {
+      midiMappings.push_back(mapping);
+    }
+  }
+  std::sort(midiMappings.begin(), midiMappings.end(),
+            [](const MidiMapping& a, const MidiMapping& b) { return a.controlId < b.controlId; });
 
   std::ostringstream ss;
   ss << "{\"ok\":true";
@@ -669,6 +831,17 @@ std::string AppController::buildStateJson() {
   ss << "\"reactiveProfile\":\"" << jsonEscape(reactiveProfile) << "\"";
   ss << '}';
 
+  ss << ",\"midi\":{";
+  ss << "\"supported\":" << jsonBool(midi_.supported()) << ',';
+  ss << "\"backend\":\"" << jsonEscape(midi_.backendName()) << "\",";
+  ss << "\"inputMode\":\"" << jsonEscape(midiInputMode) << "\",";
+  ss << "\"learningControlId\":\"" << jsonEscape(midiLearningControlId) << "\",";
+  ss << "\"inputs\":";
+  appendMidiInputArrayJson(ss, midiInputs);
+  ss << ",\"mappings\":";
+  appendMidiMappingArrayJson(ss, midiMappings);
+  ss << '}';
+
   ss << ",\"templates\":";
   appendTemplateArrayJson(ss, templates);
 
@@ -677,6 +850,9 @@ std::string AppController::buildStateJson() {
 
   ss << ",\"groups\":";
   appendGroupArrayJson(ss, groups);
+
+  ss << ",\"scenes\":";
+  appendSceneArrayJson(ss, scenes);
 
   ss << ",\"logs\":";
   appendLogArrayJson(ss, recentLogs(300));
@@ -1049,6 +1225,319 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
   }
 }
 
+void AppController::refreshMidiMappingsFromDatabase() {
+  std::string error;
+  const auto mappings = db_.listMidiMappings(error);
+  if (!error.empty()) {
+    logMessage(LogLevel::Warn, "midi", "Failed to load mappings: " + error);
+    return;
+  }
+
+  std::scoped_lock lock(midiMutex_);
+  midiMappings_.clear();
+  midiLastAppliedValues_.clear();
+  for (const auto& mapping : mappings) {
+    midiMappings_[mapping.controlId] = mapping;
+  }
+}
+
+bool AppController::applyMidiControl(const std::string& controlId, int value, bool on, std::string& error) {
+  const auto parts = splitBy(controlId, ':');
+  if (parts.empty()) {
+    error = "Invalid control id";
+    return false;
+  }
+
+  if (parts.size() == 4 && parts[0] == "fixture" && parts[2] == "ch") {
+    int fixtureId = 0;
+    int channelIndex = 0;
+    if (!parseInt(parts[1], fixtureId) || !parseInt(parts[3], channelIndex)) {
+      error = "Invalid fixture control id";
+      return false;
+    }
+
+    ChannelPatch patch;
+    if (!db_.updateFixtureChannelValue(fixtureId, channelIndex, clampDmx(value), patch, error)) {
+      return false;
+    }
+    dmx_.setChannel(patch.universe, patch.absoluteAddress, patch.value);
+    return true;
+  }
+
+  if (parts.size() == 4 && parts[0] == "group" && parts[2] == "kind") {
+    int groupId = 0;
+    if (!parseInt(parts[1], groupId)) {
+      error = "Invalid group control id";
+      return false;
+    }
+
+    const std::string kind = toLower(parts[3]);
+    std::string dbError;
+    const auto groups = db_.listGroups(dbError);
+    if (!dbError.empty()) {
+      error = dbError;
+      return false;
+    }
+
+    auto it = std::find_if(groups.begin(), groups.end(), [groupId](const FixtureGroup& g) { return g.id == groupId; });
+    if (it == groups.end()) {
+      error = "Group not found";
+      return false;
+    }
+
+    const auto resolved = resolveFixtures(dbError);
+    if (!dbError.empty()) {
+      error = dbError;
+      return false;
+    }
+
+    std::unordered_set<int> members(it->fixtureIds.begin(), it->fixtureIds.end());
+    for (const auto& fixtureView : resolved) {
+      if (!members.contains(fixtureView.fixture.id)) {
+        continue;
+      }
+      for (const auto& channel : fixtureView.templateChannels) {
+        if (toLower(channel.kind) != kind) {
+          continue;
+        }
+
+        ChannelPatch patch;
+        if (!db_.updateFixtureChannelValue(fixtureView.fixture.id, channel.channelIndex, clampDmx(value), patch, dbError)) {
+          continue;
+        }
+        dmx_.setChannel(patch.universe, patch.absoluteAddress, patch.value);
+      }
+    }
+    return true;
+  }
+
+  if (controlId == "audio:reactive") {
+    const bool enabled = on || value > 0;
+    audio_.setReactiveMode(enabled);
+    if (!enabled) {
+      rebuildAllUniversesFromDatabase();
+    }
+    return true;
+  }
+
+  if (parts.size() == 3 && parts[0] == "scene" && parts[2] == "recall") {
+    int sceneId = 0;
+    if (!parseInt(parts[1], sceneId)) {
+      error = "Invalid scene control id";
+      return false;
+    }
+    if (!(on || value > 0)) {
+      return true;
+    }
+    return startSceneTransition(sceneId, -1.0F, error);
+  }
+
+  error = "Unsupported MIDI control: " + controlId;
+  return false;
+}
+
+void AppController::onMidiMessage(const MidiMessage& message) {
+  std::vector<MidiMapping> candidates;
+  std::string learningControlId;
+  std::string inputMode;
+  {
+    std::scoped_lock lock(midiMutex_);
+    inputMode = midiInputMode_;
+    if (inputMode != "all" && inputMode != message.inputId) {
+      return;
+    }
+
+    learningControlId = midiLearningControlId_;
+    if (learningControlId.empty()) {
+      candidates.reserve(midiMappings_.size());
+      for (const auto& [_, mapping] : midiMappings_) {
+        candidates.push_back(mapping);
+      }
+    }
+  }
+
+  if (!learningControlId.empty()) {
+    MidiMapping mapping;
+    mapping.controlId = learningControlId;
+    mapping.source = inputMode == "all" ? "all" : "specific";
+    mapping.inputId = mapping.source == "specific" ? inputMode : "";
+    mapping.type = message.type == "note" ? "note" : "cc";
+    mapping.channel = std::clamp(message.channel, 1, 16);
+    mapping.number = std::clamp(message.number, 0, 127);
+
+    std::string error;
+    if (!db_.upsertMidiMapping(mapping, error)) {
+      logMessage(LogLevel::Warn, "midi", "Failed to save mapping: " + error);
+      return;
+    }
+
+    {
+      std::scoped_lock lock(midiMutex_);
+      midiMappings_[mapping.controlId] = mapping;
+      midiLearningControlId_.clear();
+      midiLastAppliedValues_.erase(mapping.controlId);
+    }
+
+    logMessage(LogLevel::Info, "midi",
+               "Mapped " + mapping.controlId + " <- " + mapping.type + " ch" + std::to_string(mapping.channel)
+                   + " #" + std::to_string(mapping.number));
+    return;
+  }
+
+  for (const auto& mapping : candidates) {
+    if (mapping.type != message.type) {
+      continue;
+    }
+    if (mapping.channel != message.channel || mapping.number != message.number) {
+      continue;
+    }
+    if (mapping.source == "specific" && mapping.inputId != message.inputId) {
+      continue;
+    }
+
+    const bool isToggle = mapping.controlId == "audio:reactive"
+                          || (mapping.controlId.rfind("scene:", 0) == 0 && mapping.controlId.find(":recall") != std::string::npos);
+    const int nextValue = isToggle ? (message.on ? 1 : 0) : clampDmx(message.mappedValue);
+
+    bool shouldApply = true;
+    {
+      std::scoped_lock lock(midiMutex_);
+      const auto it = midiLastAppliedValues_.find(mapping.controlId);
+      if (it != midiLastAppliedValues_.end() && it->second == nextValue) {
+        shouldApply = false;
+      } else {
+        midiLastAppliedValues_[mapping.controlId] = nextValue;
+      }
+    }
+
+    if (!shouldApply) {
+      continue;
+    }
+
+    std::string error;
+    if (!applyMidiControl(mapping.controlId, nextValue, message.on, error) && !error.empty()) {
+      if (!error.starts_with("Unsupported MIDI control")) {
+        logMessage(LogLevel::Warn, "midi", error);
+      }
+    }
+  }
+}
+
+bool AppController::startSceneTransition(int sceneId, float transitionSeconds, std::string& error) {
+  float durationSeconds = transitionSeconds;
+  auto scenes = db_.listScenes(error);
+  if (!error.empty()) {
+    return false;
+  }
+
+  auto sceneIt = std::find_if(scenes.begin(), scenes.end(), [sceneId](const SceneDefinition& s) { return s.id == sceneId; });
+  if (sceneIt == scenes.end()) {
+    error = "Scene not found";
+    return false;
+  }
+
+  if (durationSeconds < 0.0F) {
+    durationSeconds = sceneIt->transitionSeconds;
+  }
+  durationSeconds = std::clamp(durationSeconds, 0.0F, 60.0F);
+
+  auto patches = db_.loadScenePatches(sceneId, error);
+  if (!error.empty()) {
+    return false;
+  }
+  if (patches.empty()) {
+    error = "Scene has no active fixture values";
+    return false;
+  }
+
+  const auto fixtures = db_.listFixtures(error);
+  if (!error.empty()) {
+    return false;
+  }
+
+  struct MorphPatch {
+    ScenePatch patch;
+    int startValue = 0;
+    int targetValue = 0;
+  };
+
+  std::unordered_map<std::string, int> currentValues;
+  for (const auto& fixture : fixtures) {
+    for (const auto& [channelIndex, value] : fixture.channelValues) {
+      currentValues[std::to_string(fixture.id) + ":" + std::to_string(channelIndex)] = clampDmx(value);
+    }
+  }
+
+  std::vector<MorphPatch> morphPatches;
+  morphPatches.reserve(patches.size());
+  for (const auto& patch : patches) {
+    MorphPatch morph;
+    morph.patch = patch;
+    morph.targetValue = clampDmx(patch.value);
+    const auto key = std::to_string(patch.fixtureId) + ":" + std::to_string(patch.channelIndex);
+    if (const auto it = currentValues.find(key); it != currentValues.end()) {
+      morph.startValue = clampDmx(it->second);
+    } else {
+      morph.startValue = 0;
+    }
+    morphPatches.push_back(std::move(morph));
+  }
+
+  const std::uint64_t token = sceneTransitionToken_.fetch_add(1) + 1;
+
+  if (durationSeconds <= 0.001F) {
+    for (const auto& morph : morphPatches) {
+      dmx_.setChannel(morph.patch.universe, morph.patch.absoluteAddress, morph.targetValue);
+    }
+
+    for (const auto& morph : morphPatches) {
+      ChannelPatch patch;
+      std::string persistError;
+      db_.updateFixtureChannelValue(morph.patch.fixtureId, morph.patch.channelIndex, morph.targetValue, patch, persistError);
+    }
+    return true;
+  }
+
+  std::thread([this, token, durationSeconds, morphPatches = std::move(morphPatches)]() mutable {
+    const auto start = std::chrono::steady_clock::now();
+
+    while (true) {
+      if (sceneTransitionToken_.load() != token) {
+        return;
+      }
+
+      const auto now = std::chrono::steady_clock::now();
+      const float elapsedSeconds =
+          std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count() / 1000.0F;
+      const float t = std::clamp(elapsedSeconds / durationSeconds, 0.0F, 1.0F);
+
+      for (const auto& morph : morphPatches) {
+        const float blended = static_cast<float>(morph.startValue)
+                              + static_cast<float>(morph.targetValue - morph.startValue) * t;
+        dmx_.setChannel(morph.patch.universe, morph.patch.absoluteAddress, clampDmx(static_cast<int>(std::lround(blended))));
+      }
+
+      if (t >= 1.0F) {
+        break;
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    for (const auto& morph : morphPatches) {
+      ChannelPatch patch;
+      std::string persistError;
+      if (!db_.updateFixtureChannelValue(morph.patch.fixtureId, morph.patch.channelIndex, morph.targetValue, patch,
+                                         persistError)) {
+        continue;
+      }
+      dmx_.setChannel(patch.universe, patch.absoluteAddress, patch.value);
+    }
+  }).detach();
+
+  return true;
+}
+
 HttpResponse AppController::serveStatic(const std::string& rawPath) {
   std::string path = rawPath;
   if (path.empty() || path == "/") {
@@ -1097,6 +1586,37 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
 
   if (request.method == "GET" && request.path == "/api/state") {
     return jsonOk(buildStateJson());
+  }
+
+  if (request.method == "GET" && request.path == "/api/midi") {
+    const auto midiInputs = midi_.inputPorts();
+    std::vector<MidiMapping> midiMappings;
+    std::string midiInputMode;
+    std::string midiLearningControlId;
+    {
+      std::scoped_lock lock(midiMutex_);
+      midiInputMode = midiInputMode_;
+      midiLearningControlId = midiLearningControlId_;
+      midiMappings.reserve(midiMappings_.size());
+      for (const auto& [_, mapping] : midiMappings_) {
+        midiMappings.push_back(mapping);
+      }
+    }
+    std::sort(midiMappings.begin(), midiMappings.end(),
+              [](const MidiMapping& a, const MidiMapping& b) { return a.controlId < b.controlId; });
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"midi\":{";
+    ss << "\"supported\":" << jsonBool(midi_.supported()) << ',';
+    ss << "\"backend\":\"" << jsonEscape(midi_.backendName()) << "\",";
+    ss << "\"inputMode\":\"" << jsonEscape(midiInputMode) << "\",";
+    ss << "\"learningControlId\":\"" << jsonEscape(midiLearningControlId) << "\",";
+    ss << "\"inputs\":";
+    appendMidiInputArrayJson(ss, midiInputs);
+    ss << ",\"mappings\":";
+    appendMidiMappingArrayJson(ss, midiMappings);
+    ss << "}}";
+    return jsonOk(ss.str());
   }
 
   if (request.method == "GET" && request.path == "/api/logs") {
@@ -1175,6 +1695,20 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     std::ostringstream ss;
     ss << "{\"ok\":true,\"groups\":";
     appendGroupArrayJson(ss, groups);
+    ss << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "GET" && request.path == "/api/scenes") {
+    std::string error;
+    const auto scenes = db_.listScenes(error);
+    if (!error.empty()) {
+      return jsonError(500, error);
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"scenes\":";
+    appendSceneArrayJson(ss, scenes);
     ss << '}';
     return jsonOk(ss.str());
   }
@@ -1458,6 +1992,200 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     }
 
     rebuildAllUniversesFromDatabase();
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && request.path == "/api/scenes") {
+    auto form = parseFormEncoded(request.body);
+    auto nameIt = form.find("name");
+    if (nameIt == form.end() || trim(nameIt->second).empty()) {
+      return jsonError(422, "Scene name is required");
+    }
+
+    float transitionSeconds = 1.0F;
+    if (auto transitionIt = form.find("transition_seconds"); transitionIt != form.end() && !trim(transitionIt->second).empty()) {
+      if (!parseFloatStrict(trim(transitionIt->second), transitionSeconds)) {
+        return jsonError(422, "transition_seconds must be a float");
+      }
+    }
+
+    std::string error;
+    const int sceneId = db_.createScene(trim(nameIt->second), transitionSeconds, error);
+    if (sceneId <= 0) {
+      if (error.find("UNIQUE") != std::string::npos) {
+        return jsonError(409, "Scene name already exists");
+      }
+      return jsonError(422, error);
+    }
+
+    logMessage(LogLevel::Info, "scene", "Created scene " + trim(nameIt->second));
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"sceneId\":" << sceneId << '}';
+    return jsonOk(ss.str(), 201);
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "scenes" &&
+      segments[3] == "update") {
+    int sceneId = 0;
+    if (!parseInt(segments[2], sceneId)) {
+      return jsonError(400, "Invalid scene id");
+    }
+
+    auto form = parseFormEncoded(request.body);
+    auto nameIt = form.find("name");
+    if (nameIt == form.end() || trim(nameIt->second).empty()) {
+      return jsonError(422, "Scene name is required");
+    }
+
+    float transitionSeconds = 1.0F;
+    std::string parseError;
+    if (!getRequiredFloat(form, "transition_seconds", transitionSeconds, parseError)) {
+      return jsonError(422, parseError);
+    }
+
+    std::string error;
+    if (!db_.updateScene(sceneId, trim(nameIt->second), transitionSeconds, error)) {
+      if (error.find("UNIQUE") != std::string::npos) {
+        return jsonError(409, "Scene name already exists");
+      }
+      return jsonError(422, error);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "scenes" &&
+      segments[3] == "capture") {
+    int sceneId = 0;
+    if (!parseInt(segments[2], sceneId)) {
+      return jsonError(400, "Invalid scene id");
+    }
+
+    std::string error;
+    if (!db_.captureScene(sceneId, error)) {
+      return jsonError(422, error);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "scenes" &&
+      segments[3] == "recall") {
+    int sceneId = 0;
+    if (!parseInt(segments[2], sceneId)) {
+      return jsonError(400, "Invalid scene id");
+    }
+
+    auto form = parseFormEncoded(request.body);
+    float transitionSeconds = -1.0F;
+    if (auto it = form.find("transition_seconds"); it != form.end() && !trim(it->second).empty()) {
+      if (!parseFloatStrict(trim(it->second), transitionSeconds)) {
+        return jsonError(422, "transition_seconds must be a float");
+      }
+    }
+
+    std::string error;
+    if (!startSceneTransition(sceneId, transitionSeconds, error)) {
+      return jsonError(422, error);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "scenes" &&
+      segments[3] == "delete") {
+    int sceneId = 0;
+    if (!parseInt(segments[2], sceneId)) {
+      return jsonError(400, "Invalid scene id");
+    }
+
+    std::string error;
+    if (!db_.deleteScene(sceneId, error)) {
+      return jsonError(422, error);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && request.path == "/api/midi/input-mode") {
+    auto form = parseFormEncoded(request.body);
+    auto modeIt = form.find("mode");
+    if (modeIt == form.end() || trim(modeIt->second).empty()) {
+      return jsonError(422, "mode is required");
+    }
+
+    std::string mode = trim(modeIt->second);
+    if (mode != "all") {
+      const auto inputs = midi_.inputPorts();
+      const bool exists = std::any_of(inputs.begin(), inputs.end(), [&mode](const MidiInputPort& input) {
+        return input.id == mode;
+      });
+      if (!exists) {
+        return jsonError(422, "Unknown MIDI input id");
+      }
+    }
+
+    std::string error;
+    if (!db_.setSetting("midi.input_mode", mode, error)) {
+      return jsonError(500, error);
+    }
+
+    {
+      std::scoped_lock lock(midiMutex_);
+      midiInputMode_ = mode;
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"mode\":\"" << jsonEscape(mode) << "\"}";
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/midi/learn/start") {
+    auto form = parseFormEncoded(request.body);
+    auto controlIt = form.find("control_id");
+    if (controlIt == form.end() || trim(controlIt->second).empty()) {
+      return jsonError(422, "control_id is required");
+    }
+
+    {
+      std::scoped_lock lock(midiMutex_);
+      midiLearningControlId_ = trim(controlIt->second);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && request.path == "/api/midi/learn/cancel") {
+    {
+      std::scoped_lock lock(midiMutex_);
+      midiLearningControlId_.clear();
+    }
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && request.path == "/api/midi/mappings/clear") {
+    auto form = parseFormEncoded(request.body);
+    auto controlIt = form.find("control_id");
+    if (controlIt == form.end() || trim(controlIt->second).empty()) {
+      return jsonError(422, "control_id is required");
+    }
+
+    const std::string controlId = trim(controlIt->second);
+    std::string error;
+    if (!db_.deleteMidiMapping(controlId, error)) {
+      return jsonError(500, error);
+    }
+
+    {
+      std::scoped_lock lock(midiMutex_);
+      midiMappings_.erase(controlId);
+      midiLastAppliedValues_.erase(controlId);
+      if (midiLearningControlId_ == controlId) {
+        midiLearningControlId_.clear();
+      }
+    }
+
     return jsonOk("{\"ok\":true}");
   }
 
