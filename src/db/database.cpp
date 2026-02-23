@@ -1,0 +1,1086 @@
+#include "database.hpp"
+
+#include <algorithm>
+#include <filesystem>
+#include <sstream>
+#include <tuple>
+
+#include "utils.hpp"
+
+namespace tuxdmx {
+
+namespace {
+
+bool execSql(sqlite3* db, const char* sql, std::string& error) {
+  char* rawError = nullptr;
+  const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &rawError);
+  if (rc != SQLITE_OK) {
+    error = rawError != nullptr ? rawError : "sqlite exec failed";
+    sqlite3_free(rawError);
+    return false;
+  }
+  return true;
+}
+
+struct Statement {
+  sqlite3_stmt* stmt = nullptr;
+
+  ~Statement() {
+    if (stmt != nullptr) {
+      sqlite3_finalize(stmt);
+    }
+  }
+};
+
+bool prepare(sqlite3* db, const char* sql, Statement& statement, std::string& error) {
+  const int rc = sqlite3_prepare_v2(db, sql, -1, &statement.stmt, nullptr);
+  if (rc != SQLITE_OK) {
+    error = sqlite3_errmsg(db);
+    return false;
+  }
+  return true;
+}
+
+int columnInt(sqlite3_stmt* stmt, int col) {
+  return sqlite3_column_int(stmt, col);
+}
+
+std::string columnText(sqlite3_stmt* stmt, int col) {
+  const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+  return text == nullptr ? "" : std::string(text);
+}
+
+}  // namespace
+
+Database::Database(std::string dbPath) : dbPath_(std::move(dbPath)) {}
+
+Database::~Database() {
+  if (db_ != nullptr) {
+    sqlite3_close(db_);
+    db_ = nullptr;
+  }
+}
+
+bool Database::initialize(std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  const auto dbFile = std::filesystem::path(dbPath_);
+  if (!dbFile.parent_path().empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(dbFile.parent_path(), ec);
+    if (ec) {
+      error = "Failed to create DB directory: " + ec.message();
+      return false;
+    }
+  }
+
+  const int rc = sqlite3_open(dbPath_.c_str(), &db_);
+  if (rc != SQLITE_OK || db_ == nullptr) {
+    error = db_ != nullptr ? sqlite3_errmsg(db_) : "sqlite open failed";
+    return false;
+  }
+
+  if (!execSql(db_, "PRAGMA foreign_keys = ON;", error)) {
+    return false;
+  }
+  if (!execSql(db_, "PRAGMA journal_mode = WAL;", error)) {
+    return false;
+  }
+
+  return runMigrations(error);
+}
+
+bool Database::runMigrations(std::string& error) {
+  static constexpr const char* kSchemaSql = R"SQL(
+CREATE TABLE IF NOT EXISTS fixture_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
+  footprint_channels INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS template_channels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  template_id INTEGER NOT NULL,
+  channel_index INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'generic',
+  default_value INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(template_id, channel_index),
+  FOREIGN KEY (template_id) REFERENCES fixture_templates(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS template_channel_ranges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id INTEGER NOT NULL,
+  start_value INTEGER NOT NULL,
+  end_value INTEGER NOT NULL,
+  label TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (channel_id) REFERENCES template_channels(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS fixtures (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  template_id INTEGER NOT NULL,
+  universe INTEGER NOT NULL DEFAULT 1,
+  start_address INTEGER NOT NULL,
+  channel_count INTEGER NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (template_id) REFERENCES fixture_templates(id)
+);
+
+CREATE TABLE IF NOT EXISTS fixture_channel_values (
+  fixture_id INTEGER NOT NULL,
+  channel_index INTEGER NOT NULL,
+  value INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(fixture_id, channel_index),
+  FOREIGN KEY (fixture_id) REFERENCES fixtures(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS fixture_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS fixture_group_members (
+  group_id INTEGER NOT NULL,
+  fixture_id INTEGER NOT NULL,
+  PRIMARY KEY(group_id, fixture_id),
+  FOREIGN KEY (group_id) REFERENCES fixture_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (fixture_id) REFERENCES fixtures(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_fixtures_universe_start ON fixtures(universe, start_address);
+CREATE INDEX IF NOT EXISTS idx_template_channels_template ON template_channels(template_id);
+CREATE INDEX IF NOT EXISTS idx_fixture_channel_values_fixture ON fixture_channel_values(fixture_id);
+)SQL";
+
+  return execSql(db_, kSchemaSql, error);
+}
+
+bool Database::beginTransaction(std::string& error) {
+  return execSql(db_, "BEGIN IMMEDIATE TRANSACTION;", error);
+}
+
+bool Database::commitTransaction(std::string& error) {
+  return execSql(db_, "COMMIT;", error);
+}
+
+void Database::rollbackTransaction() {
+  std::string ignore;
+  execSql(db_, "ROLLBACK;", ignore);
+}
+
+int Database::createTemplate(const std::string& name, const std::string& description, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_, "INSERT INTO fixture_templates(name, description) VALUES(?, ?);", stmt, error)) {
+    return 0;
+  }
+
+  sqlite3_bind_text(stmt.stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.stmt, 2, description.c_str(), -1, SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return 0;
+  }
+
+  return static_cast<int>(sqlite3_last_insert_rowid(db_));
+}
+
+int Database::addTemplateChannel(int templateId, int channelIndex, const std::string& name, const std::string& kind,
+                                 int defaultValue, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement insertStmt;
+  if (!prepare(db_,
+               "INSERT INTO template_channels(template_id, channel_index, name, kind, default_value) VALUES(?, ?, ?, ?, ?);",
+               insertStmt, error)) {
+    return 0;
+  }
+
+  sqlite3_bind_int(insertStmt.stmt, 1, templateId);
+  sqlite3_bind_int(insertStmt.stmt, 2, channelIndex);
+  sqlite3_bind_text(insertStmt.stmt, 3, name.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(insertStmt.stmt, 4, kind.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(insertStmt.stmt, 5, clampDmx(defaultValue));
+
+  if (sqlite3_step(insertStmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return 0;
+  }
+
+  Statement updateStmt;
+  if (!prepare(db_,
+               "UPDATE fixture_templates SET footprint_channels = MAX(footprint_channels, ?) WHERE id = ?;",
+               updateStmt, error)) {
+    return 0;
+  }
+
+  sqlite3_bind_int(updateStmt.stmt, 1, channelIndex);
+  sqlite3_bind_int(updateStmt.stmt, 2, templateId);
+
+  if (sqlite3_step(updateStmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return 0;
+  }
+
+  return static_cast<int>(sqlite3_last_insert_rowid(db_));
+}
+
+int Database::addChannelRange(int channelId, int startValue, int endValue, const std::string& label, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_,
+               "INSERT INTO template_channel_ranges(channel_id, start_value, end_value, label) VALUES(?, ?, ?, ?);",
+               stmt, error)) {
+    return 0;
+  }
+
+  sqlite3_bind_int(stmt.stmt, 1, channelId);
+  sqlite3_bind_int(stmt.stmt, 2, clampDmx(startValue));
+  sqlite3_bind_int(stmt.stmt, 3, clampDmx(endValue));
+  sqlite3_bind_text(stmt.stmt, 4, label.c_str(), -1, SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return 0;
+  }
+
+  return static_cast<int>(sqlite3_last_insert_rowid(db_));
+}
+
+bool Database::updateTemplateChannel(int channelId, const std::string& name, const std::string& kind, int defaultValue,
+                                     std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_, "UPDATE template_channels SET name = ?, kind = ?, default_value = ? WHERE id = ?;", stmt, error)) {
+    return false;
+  }
+
+  sqlite3_bind_text(stmt.stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.stmt, 2, kind.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt.stmt, 3, clampDmx(defaultValue));
+  sqlite3_bind_int(stmt.stmt, 4, channelId);
+
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  if (sqlite3_changes(db_) == 0) {
+    error = "Template channel not found";
+    return false;
+  }
+
+  return true;
+}
+
+bool Database::clearChannelRanges(int channelId, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_, "DELETE FROM template_channel_ranges WHERE channel_id = ?;", stmt, error)) {
+    return false;
+  }
+
+  sqlite3_bind_int(stmt.stmt, 1, channelId);
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  return true;
+}
+
+std::vector<FixtureTemplate> Database::listTemplates(std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  std::vector<FixtureTemplate> templates;
+
+  Statement templateStmt;
+  if (!prepare(db_,
+               "SELECT id, name, description, footprint_channels FROM fixture_templates ORDER BY name COLLATE NOCASE;",
+               templateStmt, error)) {
+    return templates;
+  }
+
+  while (sqlite3_step(templateStmt.stmt) == SQLITE_ROW) {
+    FixtureTemplate t;
+    t.id = columnInt(templateStmt.stmt, 0);
+    t.name = columnText(templateStmt.stmt, 1);
+    t.description = columnText(templateStmt.stmt, 2);
+    t.footprintChannels = columnInt(templateStmt.stmt, 3);
+    templates.push_back(std::move(t));
+  }
+
+  for (auto& t : templates) {
+    Statement channelStmt;
+    if (!prepare(db_,
+                 "SELECT id, channel_index, name, kind, default_value FROM template_channels WHERE template_id = ? "
+                 "ORDER BY channel_index;",
+                 channelStmt, error)) {
+      return {};
+    }
+    sqlite3_bind_int(channelStmt.stmt, 1, t.id);
+
+    while (sqlite3_step(channelStmt.stmt) == SQLITE_ROW) {
+      TemplateChannel c;
+      c.id = columnInt(channelStmt.stmt, 0);
+      c.channelIndex = columnInt(channelStmt.stmt, 1);
+      c.name = columnText(channelStmt.stmt, 2);
+      c.kind = columnText(channelStmt.stmt, 3);
+      c.defaultValue = columnInt(channelStmt.stmt, 4);
+      t.channels.push_back(std::move(c));
+    }
+
+    for (auto& c : t.channels) {
+      Statement rangeStmt;
+      if (!prepare(db_,
+                   "SELECT id, start_value, end_value, label FROM template_channel_ranges WHERE channel_id = ? "
+                   "ORDER BY start_value;",
+                   rangeStmt, error)) {
+        return {};
+      }
+      sqlite3_bind_int(rangeStmt.stmt, 1, c.id);
+
+      while (sqlite3_step(rangeStmt.stmt) == SQLITE_ROW) {
+        ChannelRange r;
+        r.id = columnInt(rangeStmt.stmt, 0);
+        r.startValue = columnInt(rangeStmt.stmt, 1);
+        r.endValue = columnInt(rangeStmt.stmt, 2);
+        r.label = columnText(rangeStmt.stmt, 3);
+        c.ranges.push_back(std::move(r));
+      }
+    }
+  }
+
+  return templates;
+}
+
+std::optional<FixtureTemplate> Database::findTemplate(int templateId, std::string& error) {
+  auto templates = listTemplates(error);
+  if (!error.empty()) {
+    return std::nullopt;
+  }
+  for (auto& t : templates) {
+    if (t.id == templateId) {
+      return t;
+    }
+  }
+  return std::nullopt;
+}
+
+Database::CreateFixtureResult Database::createFixture(const std::string& name, int templateId, int universe, int startAddress,
+                                                      int channelCountOverride, bool allowOverlap) {
+  std::scoped_lock lock(mutex_);
+
+  CreateFixtureResult result;
+
+  if (universe < 1) {
+    result.error = "Universe must be >= 1";
+    return result;
+  }
+
+  if (startAddress < 1 || startAddress > 512) {
+    result.error = "Start address must be between 1 and 512";
+    return result;
+  }
+
+  int footprint = 0;
+  {
+    Statement stmt;
+    if (!prepare(db_, "SELECT footprint_channels FROM fixture_templates WHERE id = ?;", stmt, result.error)) {
+      return result;
+    }
+    sqlite3_bind_int(stmt.stmt, 1, templateId);
+    if (sqlite3_step(stmt.stmt) == SQLITE_ROW) {
+      footprint = columnInt(stmt.stmt, 0);
+    } else {
+      result.error = "Template not found";
+      return result;
+    }
+  }
+
+  const int channelCount = channelCountOverride > 0 ? channelCountOverride : footprint;
+  if (channelCount <= 0) {
+    result.error = "Channel count must be greater than zero";
+    return result;
+  }
+
+  const int endAddress = startAddress + channelCount - 1;
+  if (endAddress > 512) {
+    result.error = "Fixture footprint exceeds DMX universe (end address > 512)";
+    return result;
+  }
+
+  if (!allowOverlap) {
+    Statement overlapStmt;
+    if (!prepare(db_,
+                 "SELECT COUNT(*) FROM fixtures WHERE universe = ? AND enabled = 1 "
+                 "AND NOT (? > start_address + channel_count - 1 OR ? < start_address);",
+                 overlapStmt, result.error)) {
+      return result;
+    }
+    sqlite3_bind_int(overlapStmt.stmt, 1, universe);
+    sqlite3_bind_int(overlapStmt.stmt, 2, startAddress);
+    sqlite3_bind_int(overlapStmt.stmt, 3, endAddress);
+
+    if (sqlite3_step(overlapStmt.stmt) == SQLITE_ROW) {
+      if (columnInt(overlapStmt.stmt, 0) > 0) {
+        result.error = "Address range overlaps another enabled fixture";
+        return result;
+      }
+    }
+  }
+
+  if (!beginTransaction(result.error)) {
+    return result;
+  }
+
+  int fixtureId = 0;
+  do {
+    Statement insertFixtureStmt;
+    if (!prepare(db_,
+                 "INSERT INTO fixtures(name, template_id, universe, start_address, channel_count, enabled) "
+                 "VALUES(?, ?, ?, ?, ?, 1);",
+                 insertFixtureStmt, result.error)) {
+      break;
+    }
+
+    sqlite3_bind_text(insertFixtureStmt.stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(insertFixtureStmt.stmt, 2, templateId);
+    sqlite3_bind_int(insertFixtureStmt.stmt, 3, universe);
+    sqlite3_bind_int(insertFixtureStmt.stmt, 4, startAddress);
+    sqlite3_bind_int(insertFixtureStmt.stmt, 5, channelCount);
+
+    if (sqlite3_step(insertFixtureStmt.stmt) != SQLITE_DONE) {
+      result.error = sqlite3_errmsg(db_);
+      break;
+    }
+
+    fixtureId = static_cast<int>(sqlite3_last_insert_rowid(db_));
+
+    Statement defaultsStmt;
+    if (!prepare(db_, "SELECT channel_index, default_value FROM template_channels WHERE template_id = ?;", defaultsStmt,
+                 result.error)) {
+      break;
+    }
+    sqlite3_bind_int(defaultsStmt.stmt, 1, templateId);
+
+    std::vector<int> defaults(channelCount + 1, 0);
+    while (sqlite3_step(defaultsStmt.stmt) == SQLITE_ROW) {
+      const int idx = columnInt(defaultsStmt.stmt, 0);
+      if (idx >= 1 && idx <= channelCount) {
+        defaults[idx] = clampDmx(columnInt(defaultsStmt.stmt, 1));
+      }
+    }
+
+    Statement insertValueStmt;
+    if (!prepare(db_,
+                 "INSERT INTO fixture_channel_values(fixture_id, channel_index, value) VALUES(?, ?, ?);",
+                 insertValueStmt, result.error)) {
+      break;
+    }
+
+    for (int i = 1; i <= channelCount; ++i) {
+      sqlite3_reset(insertValueStmt.stmt);
+      sqlite3_clear_bindings(insertValueStmt.stmt);
+      sqlite3_bind_int(insertValueStmt.stmt, 1, fixtureId);
+      sqlite3_bind_int(insertValueStmt.stmt, 2, i);
+      sqlite3_bind_int(insertValueStmt.stmt, 3, defaults[i]);
+      if (sqlite3_step(insertValueStmt.stmt) != SQLITE_DONE) {
+        result.error = sqlite3_errmsg(db_);
+        break;
+      }
+    }
+
+    if (!result.error.empty()) {
+      break;
+    }
+
+    if (!commitTransaction(result.error)) {
+      break;
+    }
+
+    result.ok = true;
+    result.fixtureId = fixtureId;
+    result.channelCount = channelCount;
+    return result;
+
+  } while (false);
+
+  rollbackTransaction();
+  return result;
+}
+
+std::vector<FixtureInstance> Database::listFixtures(std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  std::vector<FixtureInstance> fixtures;
+
+  Statement fixtureStmt;
+  if (!prepare(db_,
+               "SELECT f.id, f.name, f.template_id, t.name, f.universe, f.start_address, f.channel_count, f.enabled "
+               "FROM fixtures f JOIN fixture_templates t ON t.id = f.template_id "
+               "ORDER BY f.universe, f.start_address, f.name COLLATE NOCASE;",
+               fixtureStmt, error)) {
+    return fixtures;
+  }
+
+  while (sqlite3_step(fixtureStmt.stmt) == SQLITE_ROW) {
+    FixtureInstance f;
+    f.id = columnInt(fixtureStmt.stmt, 0);
+    f.name = columnText(fixtureStmt.stmt, 1);
+    f.templateId = columnInt(fixtureStmt.stmt, 2);
+    f.templateName = columnText(fixtureStmt.stmt, 3);
+    f.universe = columnInt(fixtureStmt.stmt, 4);
+    f.startAddress = columnInt(fixtureStmt.stmt, 5);
+    f.channelCount = columnInt(fixtureStmt.stmt, 6);
+    f.enabled = columnInt(fixtureStmt.stmt, 7) != 0;
+    fixtures.push_back(std::move(f));
+  }
+
+  for (auto& fixture : fixtures) {
+    Statement valuesStmt;
+    if (!prepare(db_,
+                 "SELECT channel_index, value FROM fixture_channel_values WHERE fixture_id = ? ORDER BY channel_index;",
+                 valuesStmt, error)) {
+      return {};
+    }
+
+    sqlite3_bind_int(valuesStmt.stmt, 1, fixture.id);
+    while (sqlite3_step(valuesStmt.stmt) == SQLITE_ROW) {
+      const int idx = columnInt(valuesStmt.stmt, 0);
+      const int value = columnInt(valuesStmt.stmt, 1);
+      fixture.channelValues[idx] = value;
+    }
+  }
+
+  return fixtures;
+}
+
+bool Database::updateFixtureChannelValue(int fixtureId, int channelIndex, int value, ChannelPatch& patch, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  int universe = 1;
+  int startAddress = 1;
+  int channelCount = 0;
+
+  {
+    Statement fixtureStmt;
+    if (!prepare(db_, "SELECT universe, start_address, channel_count FROM fixtures WHERE id = ?;", fixtureStmt, error)) {
+      return false;
+    }
+    sqlite3_bind_int(fixtureStmt.stmt, 1, fixtureId);
+    if (sqlite3_step(fixtureStmt.stmt) != SQLITE_ROW) {
+      error = "Fixture not found";
+      return false;
+    }
+
+    universe = columnInt(fixtureStmt.stmt, 0);
+    startAddress = columnInt(fixtureStmt.stmt, 1);
+    channelCount = columnInt(fixtureStmt.stmt, 2);
+  }
+
+  if (channelIndex < 1 || channelIndex > channelCount) {
+    error = "Channel index out of fixture range";
+    return false;
+  }
+
+  Statement updateStmt;
+  if (!prepare(db_, "UPDATE fixture_channel_values SET value = ? WHERE fixture_id = ? AND channel_index = ?;", updateStmt,
+               error)) {
+    return false;
+  }
+
+  sqlite3_bind_int(updateStmt.stmt, 1, clampDmx(value));
+  sqlite3_bind_int(updateStmt.stmt, 2, fixtureId);
+  sqlite3_bind_int(updateStmt.stmt, 3, channelIndex);
+
+  if (sqlite3_step(updateStmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  if (sqlite3_changes(db_) == 0) {
+    error = "Channel value row not found";
+    return false;
+  }
+
+  patch.universe = universe;
+  patch.absoluteAddress = startAddress + channelIndex - 1;
+  patch.value = clampDmx(value);
+
+  return true;
+}
+
+bool Database::setFixtureEnabled(int fixtureId, bool enabled, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_, "UPDATE fixtures SET enabled = ? WHERE id = ?;", stmt, error)) {
+    return false;
+  }
+
+  sqlite3_bind_int(stmt.stmt, 1, enabled ? 1 : 0);
+  sqlite3_bind_int(stmt.stmt, 2, fixtureId);
+
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  if (sqlite3_changes(db_) == 0) {
+    error = "Fixture not found";
+    return false;
+  }
+
+  return true;
+}
+
+int Database::createGroup(const std::string& name, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_, "INSERT INTO fixture_groups(name) VALUES(?);", stmt, error)) {
+    return 0;
+  }
+  sqlite3_bind_text(stmt.stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return 0;
+  }
+
+  return static_cast<int>(sqlite3_last_insert_rowid(db_));
+}
+
+bool Database::setGroupFixtures(int groupId, const std::vector<int>& fixtureIds, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement groupStmt;
+  if (!prepare(db_, "SELECT id FROM fixture_groups WHERE id = ?;", groupStmt, error)) {
+    return false;
+  }
+  sqlite3_bind_int(groupStmt.stmt, 1, groupId);
+  if (sqlite3_step(groupStmt.stmt) != SQLITE_ROW) {
+    error = "Group not found";
+    return false;
+  }
+
+  if (!beginTransaction(error)) {
+    return false;
+  }
+
+  do {
+    Statement deleteStmt;
+    if (!prepare(db_, "DELETE FROM fixture_group_members WHERE group_id = ?;", deleteStmt, error)) {
+      break;
+    }
+    sqlite3_bind_int(deleteStmt.stmt, 1, groupId);
+    if (sqlite3_step(deleteStmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db_);
+      break;
+    }
+
+    std::vector<int> deduped = fixtureIds;
+    std::sort(deduped.begin(), deduped.end());
+    deduped.erase(std::unique(deduped.begin(), deduped.end()), deduped.end());
+
+    Statement fixtureExistsStmt;
+    if (!prepare(db_, "SELECT id FROM fixtures WHERE id = ?;", fixtureExistsStmt, error)) {
+      break;
+    }
+
+    Statement insertStmt;
+    if (!prepare(db_, "INSERT INTO fixture_group_members(group_id, fixture_id) VALUES(?, ?);", insertStmt, error)) {
+      break;
+    }
+
+    for (int fixtureId : deduped) {
+      sqlite3_reset(fixtureExistsStmt.stmt);
+      sqlite3_clear_bindings(fixtureExistsStmt.stmt);
+      sqlite3_bind_int(fixtureExistsStmt.stmt, 1, fixtureId);
+      if (sqlite3_step(fixtureExistsStmt.stmt) != SQLITE_ROW) {
+        error = "Fixture id " + std::to_string(fixtureId) + " does not exist";
+        break;
+      }
+
+      sqlite3_reset(insertStmt.stmt);
+      sqlite3_clear_bindings(insertStmt.stmt);
+      sqlite3_bind_int(insertStmt.stmt, 1, groupId);
+      sqlite3_bind_int(insertStmt.stmt, 2, fixtureId);
+      if (sqlite3_step(insertStmt.stmt) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db_);
+        break;
+      }
+    }
+
+    if (!error.empty()) {
+      break;
+    }
+
+    if (!commitTransaction(error)) {
+      break;
+    }
+
+    return true;
+  } while (false);
+
+  rollbackTransaction();
+  return false;
+}
+
+std::vector<FixtureGroup> Database::listGroups(std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  std::vector<FixtureGroup> groups;
+
+  Statement groupStmt;
+  if (!prepare(db_, "SELECT id, name FROM fixture_groups ORDER BY name COLLATE NOCASE;", groupStmt, error)) {
+    return groups;
+  }
+
+  while (sqlite3_step(groupStmt.stmt) == SQLITE_ROW) {
+    FixtureGroup group;
+    group.id = columnInt(groupStmt.stmt, 0);
+    group.name = columnText(groupStmt.stmt, 1);
+    groups.push_back(std::move(group));
+  }
+
+  for (auto& group : groups) {
+    Statement memberStmt;
+    if (!prepare(db_, "SELECT fixture_id FROM fixture_group_members WHERE group_id = ? ORDER BY fixture_id;", memberStmt,
+                 error)) {
+      return {};
+    }
+    sqlite3_bind_int(memberStmt.stmt, 1, group.id);
+
+    while (sqlite3_step(memberStmt.stmt) == SQLITE_ROW) {
+      group.fixtureIds.push_back(columnInt(memberStmt.stmt, 0));
+    }
+  }
+
+  return groups;
+}
+
+bool Database::deleteGroup(int groupId, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement stmt;
+  if (!prepare(db_, "DELETE FROM fixture_groups WHERE id = ?;", stmt, error)) {
+    return false;
+  }
+
+  sqlite3_bind_int(stmt.stmt, 1, groupId);
+  if (sqlite3_step(stmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  if (sqlite3_changes(db_) == 0) {
+    error = "Group not found";
+    return false;
+  }
+
+  return true;
+}
+
+std::vector<ChannelPatch> Database::loadUniversePatch(int universe, std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  std::vector<ChannelPatch> patches;
+
+  Statement stmt;
+  if (!prepare(db_,
+               "SELECT f.start_address, v.channel_index, v.value FROM fixtures f "
+               "JOIN fixture_channel_values v ON v.fixture_id = f.id "
+               "WHERE f.universe = ? AND f.enabled = 1;",
+               stmt, error)) {
+    return patches;
+  }
+  sqlite3_bind_int(stmt.stmt, 1, universe);
+
+  while (sqlite3_step(stmt.stmt) == SQLITE_ROW) {
+    ChannelPatch patch;
+    patch.universe = universe;
+    patch.absoluteAddress = columnInt(stmt.stmt, 0) + columnInt(stmt.stmt, 1) - 1;
+    patch.value = clampDmx(columnInt(stmt.stmt, 2));
+    patches.push_back(std::move(patch));
+  }
+
+  return patches;
+}
+
+bool Database::seedAliExpressRgbPar(std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement checkStmt;
+  if (!prepare(db_, "SELECT id FROM fixture_templates WHERE name = ?;", checkStmt, error)) {
+    return false;
+  }
+
+  sqlite3_bind_text(checkStmt.stmt, 1, "AliExpress 60x3W RGB PAR", -1, SQLITE_TRANSIENT);
+  if (sqlite3_step(checkStmt.stmt) == SQLITE_ROW) {
+    return true;
+  }
+
+  if (!beginTransaction(error)) {
+    return false;
+  }
+
+  do {
+    Statement templateStmt;
+    if (!prepare(db_, "INSERT INTO fixture_templates(name, description, footprint_channels) VALUES(?, ?, 7);",
+                 templateStmt, error)) {
+      break;
+    }
+    sqlite3_bind_text(templateStmt.stmt, 1, "AliExpress 60x3W RGB PAR", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(templateStmt.stmt, 2,
+                      "3W*60 LED RGB 3-in-1 PAR fixture profile based on manual channel mapping.", -1,
+                      SQLITE_TRANSIENT);
+
+    if (sqlite3_step(templateStmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db_);
+      break;
+    }
+
+    const int templateId = static_cast<int>(sqlite3_last_insert_rowid(db_));
+
+    struct SeedChannel {
+      int idx;
+      const char* name;
+      const char* kind;
+      int defaultValue;
+      std::vector<std::tuple<int, int, const char*>> ranges;
+    };
+
+    const std::vector<SeedChannel> channels = {
+        {1, "Master Dimmer", "dimmer", 255, {{0, 255, "Master dimmer for RGB output"}}},
+        {2, "Red", "red", 0, {{0, 255, "Red intensity"}}},
+        {3, "Green", "green", 0, {{0, 255, "Green intensity"}}},
+        {4, "Blue", "blue", 0, {{0, 255, "Blue intensity"}}},
+        {5, "Strobe", "strobe", 0, {{0, 3, "No flicker"}, {4, 255, "Strobe slow to fast"}}},
+        {6,
+         "Program Mode",
+         "mode",
+         0,
+         {{0, 50, "Manual CH1-CH6"},
+          {51, 100, "Jump"},
+          {101, 150, "Gradient"},
+          {151, 200, "Variable Pulse"},
+          {201, 255, "Voice"}}},
+        {7, "Effect Speed", "speed", 0, {{0, 255, "Effect speed adjustment"}}},
+    };
+
+    Statement channelStmt;
+    if (!prepare(db_,
+                 "INSERT INTO template_channels(template_id, channel_index, name, kind, default_value) VALUES(?, ?, ?, ?, ?);",
+                 channelStmt, error)) {
+      break;
+    }
+
+    Statement rangeStmt;
+    if (!prepare(db_,
+                 "INSERT INTO template_channel_ranges(channel_id, start_value, end_value, label) VALUES(?, ?, ?, ?);",
+                 rangeStmt, error)) {
+      break;
+    }
+
+    for (const auto& c : channels) {
+      sqlite3_reset(channelStmt.stmt);
+      sqlite3_clear_bindings(channelStmt.stmt);
+      sqlite3_bind_int(channelStmt.stmt, 1, templateId);
+      sqlite3_bind_int(channelStmt.stmt, 2, c.idx);
+      sqlite3_bind_text(channelStmt.stmt, 3, c.name, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(channelStmt.stmt, 4, c.kind, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(channelStmt.stmt, 5, c.defaultValue);
+      if (sqlite3_step(channelStmt.stmt) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db_);
+        break;
+      }
+
+      const int channelId = static_cast<int>(sqlite3_last_insert_rowid(db_));
+      for (const auto& r : c.ranges) {
+        sqlite3_reset(rangeStmt.stmt);
+        sqlite3_clear_bindings(rangeStmt.stmt);
+        sqlite3_bind_int(rangeStmt.stmt, 1, channelId);
+        sqlite3_bind_int(rangeStmt.stmt, 2, std::get<0>(r));
+        sqlite3_bind_int(rangeStmt.stmt, 3, std::get<1>(r));
+        sqlite3_bind_text(rangeStmt.stmt, 4, std::get<2>(r), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(rangeStmt.stmt) != SQLITE_DONE) {
+          error = sqlite3_errmsg(db_);
+          break;
+        }
+      }
+
+      if (!error.empty()) {
+        break;
+      }
+    }
+
+    if (!error.empty()) {
+      break;
+    }
+
+    if (!commitTransaction(error)) {
+      break;
+    }
+
+    return true;
+
+  } while (false);
+
+  rollbackTransaction();
+  return false;
+}
+
+bool Database::seedMiraDye(std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  Statement checkStmt;
+  if (!prepare(db_, "SELECT id FROM fixture_templates WHERE name = ?;", checkStmt, error)) {
+    return false;
+  }
+
+  sqlite3_bind_text(checkStmt.stmt, 1, "Mira Dye", -1, SQLITE_TRANSIENT);
+  if (sqlite3_step(checkStmt.stmt) == SQLITE_ROW) {
+    return true;
+  }
+
+  if (!beginTransaction(error)) {
+    return false;
+  }
+
+  do {
+    Statement templateStmt;
+    if (!prepare(db_, "INSERT INTO fixture_templates(name, description, footprint_channels) VALUES(?, ?, 13);",
+                 templateStmt, error)) {
+      break;
+    }
+
+    sqlite3_bind_text(templateStmt.stmt, 1, "Mira Dye", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(
+        templateStmt.stmt, 2,
+        "Moving-head RGBW profile with X/Y axes, strip effects, built-in color programs, and macro control.", -1,
+        SQLITE_TRANSIENT);
+
+    if (sqlite3_step(templateStmt.stmt) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db_);
+      break;
+    }
+
+    const int templateId = static_cast<int>(sqlite3_last_insert_rowid(db_));
+
+    struct SeedChannel {
+      int idx;
+      const char* name;
+      const char* kind;
+      int defaultValue;
+      std::vector<std::tuple<int, int, const char*>> ranges;
+    };
+
+    const std::vector<SeedChannel> channels = {
+        {1, "X axle", "pan", 128, {{0, 255, "0-360 degree rotation"}}},
+        {2, "Y axle", "tilt", 128, {{0, 255, "0-180 degree rotation"}}},
+        {3, "X-axis speed", "pan_speed", 255, {{0, 255, "Speed fast to slow"}}},
+        {4, "Total light control", "dimmer", 255, {{0, 255, "Linear dimming dark to light"}}},
+        {5, "Stroboflash", "strobe", 0, {{0, 9, "NF"}, {10, 255, "Flicker slow to fast"}}},
+        {6, "Stained Red", "red", 0, {{0, 255, "Red linear dimming 0-100%"}}},
+        {7, "Tinted Green", "green", 0, {{0, 255, "Green linear dimming 0-100%"}}},
+        {8, "Dye blue", "blue", 0, {{0, 255, "Blue linear dimming 0-100%"}}},
+        {9, "Stained White", "white", 0, {{0, 255, "White linear dimming 0-100%"}}},
+        {10,
+         "Fancy Light Strips",
+         "strip_effect",
+         0,
+         {{0, 13, "NF"}, {13, 75, "7 fixed color options"}, {76, 255, "20 self-drive effect options"}}},
+        {11, "Speed of the light band", "speed", 0, {{0, 255, "Effect speed slow to fast"}}},
+        {12,
+         "Built-in color effect",
+         "effect_mode",
+         0,
+         {{0, 15, "NF"}, {16, 95, "Color Shift"}, {96, 177, "Tint Gradients"}, {178, 255, "Chromatic aberration"}}},
+        {13,
+         "Macro function controls",
+         "macro",
+         0,
+         {{0, 50, "NF"},
+          {51, 150, "Random walk"},
+          {151, 250, "Voice activated self-propelled"},
+          {251, 255, "Wait 3 seconds then reset"}}},
+    };
+
+    Statement channelStmt;
+    if (!prepare(db_,
+                 "INSERT INTO template_channels(template_id, channel_index, name, kind, default_value) VALUES(?, ?, ?, ?, ?);",
+                 channelStmt, error)) {
+      break;
+    }
+
+    Statement rangeStmt;
+    if (!prepare(db_,
+                 "INSERT INTO template_channel_ranges(channel_id, start_value, end_value, label) VALUES(?, ?, ?, ?);",
+                 rangeStmt, error)) {
+      break;
+    }
+
+    for (const auto& c : channels) {
+      sqlite3_reset(channelStmt.stmt);
+      sqlite3_clear_bindings(channelStmt.stmt);
+      sqlite3_bind_int(channelStmt.stmt, 1, templateId);
+      sqlite3_bind_int(channelStmt.stmt, 2, c.idx);
+      sqlite3_bind_text(channelStmt.stmt, 3, c.name, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(channelStmt.stmt, 4, c.kind, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(channelStmt.stmt, 5, c.defaultValue);
+      if (sqlite3_step(channelStmt.stmt) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db_);
+        break;
+      }
+
+      const int channelId = static_cast<int>(sqlite3_last_insert_rowid(db_));
+      for (const auto& r : c.ranges) {
+        sqlite3_reset(rangeStmt.stmt);
+        sqlite3_clear_bindings(rangeStmt.stmt);
+        sqlite3_bind_int(rangeStmt.stmt, 1, channelId);
+        sqlite3_bind_int(rangeStmt.stmt, 2, std::get<0>(r));
+        sqlite3_bind_int(rangeStmt.stmt, 3, std::get<1>(r));
+        sqlite3_bind_text(rangeStmt.stmt, 4, std::get<2>(r), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(rangeStmt.stmt) != SQLITE_DONE) {
+          error = sqlite3_errmsg(db_);
+          break;
+        }
+      }
+
+      if (!error.empty()) {
+        break;
+      }
+    }
+
+    if (!error.empty()) {
+      break;
+    }
+
+    if (!commitTransaction(error)) {
+      break;
+    }
+
+    return true;
+  } while (false);
+
+  rollbackTransaction();
+  return false;
+}
+
+}  // namespace tuxdmx

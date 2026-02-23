@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>TuxDMX Control</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+
+  <main class="app-shell">
+    <header class="topbar glass">
+      <div>
+        <p class="eyebrow">DMX control server</p>
+        <h1>TuxDMX Studio</h1>
+      </div>
+      <div class="topbar-actions">
+        <button id="refresh-btn" class="btn ghost">Refresh</button>
+        <button id="audio-toggle" class="btn accent">Music Reactive: Off</button>
+      </div>
+    </header>
+
+    <section class="status-strip glass" id="status-strip">
+      <article>
+        <h2>Device</h2>
+        <p id="device-status">Checking ENTTEC DMX USB Pro...</p>
+      </article>
+      <article>
+        <h2>Connection</h2>
+        <p id="device-port">Port: --</p>
+        <p id="device-serial">Serial: --</p>
+      </article>
+      <article>
+        <h2>Engine</h2>
+        <p id="device-fw">Firmware: --</p>
+        <p id="audio-backend">Audio Backend: --</p>
+      </article>
+      <article>
+        <h2>Audio Analysis</h2>
+        <p id="audio-energy">Energy: --</p>
+        <p id="audio-bass">Bass: --</p>
+        <p id="audio-bpm">BPM: --</p>
+      </article>
+      <article>
+        <h2>Output Universe</h2>
+        <div class="inline-controls">
+          <select id="output-universe-select"></select>
+          <button id="apply-universe-btn" class="btn ghost">Apply</button>
+        </div>
+        <p id="output-universe-label">Current: U1</p>
+      </article>
+    </section>
+
+    <section class="workspace-grid">
+      <article class="panel glass">
+        <div class="panel-head">
+          <h2>Template Builder</h2>
+          <p>Create custom fixtures and define channel ranges.</p>
+        </div>
+
+        <div class="inline-controls template-actions">
+          <button id="template-export-btn" class="btn ghost" type="button">Export Templates</button>
+          <button id="template-import-btn" class="btn ghost" type="button">Import Templates</button>
+          <input type="file" id="template-import-file" accept="application/json" hidden>
+        </div>
+
+        <form id="template-form" class="stack-form">
+          <label>
+            Template Name
+            <input type="text" name="name" required placeholder="AliExpress 60x3W RGB PAR">
+          </label>
+          <label>
+            Description
+            <textarea name="description" rows="2" placeholder="Optional notes"></textarea>
+          </label>
+
+          <div class="inline-head">
+            <h3>Channels</h3>
+            <button type="button" id="add-channel-btn" class="btn ghost">Add Channel</button>
+          </div>
+
+          <div class="inline-controls">
+            <input type="number" id="quick-channel-count" min="1" max="64" value="13" aria-label="Channel count">
+            <button type="button" id="generate-channels-btn" class="btn ghost">Generate Blank Channels</button>
+          </div>
+
+          <div id="channel-editor-list" class="channel-editor-list"></div>
+
+          <button type="submit" class="btn primary">Save Template</button>
+        </form>
+      </article>
+
+      <article class="panel glass">
+        <div class="panel-head">
+          <h2>Patch Fixture</h2>
+          <p>Select template, universe, start address, and channel count.</p>
+        </div>
+
+        <form id="fixture-form" class="stack-form">
+          <label>
+            Fixture Name
+            <input type="text" name="name" required placeholder="Stage Left PAR 1">
+          </label>
+          <label>
+            Template
+            <select name="template_id" id="fixture-template-select" required></select>
+          </label>
+
+          <div class="grid-two">
+            <label>
+              Universe
+              <input type="number" name="universe" min="1" value="1">
+            </label>
+            <label>
+              Start Address
+              <input type="number" name="start_address" id="fixture-start-address" min="1" max="512" value="1" required>
+            </label>
+          </div>
+
+          <div class="grid-two">
+            <label>
+              Channel Count
+              <input type="number" name="channel_count" id="fixture-channel-count" min="1" placeholder="Auto from template">
+            </label>
+            <div class="calc-card" id="patch-range-card">
+              <span>Patched Range</span>
+              <strong id="patch-range-text">1 - 1</strong>
+            </div>
+          </div>
+
+          <button type="submit" class="btn primary">Add Fixture</button>
+        </form>
+
+        <div class="template-summary">
+          <h3>Available Templates</h3>
+          <div id="template-list" class="template-list"></div>
+        </div>
+      </article>
+
+      <article class="panel glass">
+        <div class="panel-head">
+          <h2>Groups</h2>
+          <p>Bundle fixtures and control channels or modes together.</p>
+        </div>
+
+        <form id="group-form" class="stack-form">
+          <label>
+            New Group Name
+            <input type="text" name="name" required placeholder="Front Truss">
+          </label>
+          <button type="submit" class="btn primary">Create Group</button>
+        </form>
+
+        <div id="group-board" class="group-board"></div>
+      </article>
+
+      <article class="panel glass">
+        <div class="panel-head">
+          <h2>Learn Lab</h2>
+          <p>Build unknown fixtures by testing channels live, then label and save channel meaning.</p>
+        </div>
+
+        <form id="learn-create-form" class="stack-form">
+          <label>
+            New Learn Template Name
+            <input type="text" name="template_name" placeholder="Mystery Beam 13ch">
+          </label>
+          <div class="grid-two">
+            <label>
+              Fixture Name
+              <input type="text" name="fixture_name" placeholder="Mystery Beam Test">
+            </label>
+            <label>
+              Channels
+              <input type="number" name="channel_count" min="1" max="64" value="13">
+            </label>
+          </div>
+          <div class="grid-two">
+            <label>
+              Universe
+              <input type="number" name="universe" min="1" value="1">
+            </label>
+            <label>
+              Start Address
+              <input type="number" name="start_address" min="1" max="512" value="1">
+            </label>
+          </div>
+          <button type="submit" class="btn primary">Create Learn Fixture</button>
+        </form>
+
+        <hr class="divider">
+
+        <div class="stack-form">
+          <label>
+            Learn Fixture
+            <select id="learn-fixture-select"></select>
+          </label>
+          <label>
+            Channel
+            <select id="learn-channel-select"></select>
+          </label>
+
+          <div class="grid-two">
+            <label>
+              Test Value
+              <input type="range" id="learn-value-slider" min="0" max="255" value="0">
+            </label>
+            <label>
+              Value (0-255)
+              <input type="number" id="learn-value-input" min="0" max="255" value="0">
+            </label>
+          </div>
+
+          <div class="inline-controls">
+            <button type="button" id="learn-capture-range-start" class="btn ghost">Use Value As Range Start</button>
+            <button type="button" id="learn-capture-range-end" class="btn ghost">Use Value As Range End</button>
+          </div>
+
+          <div class="grid-two">
+            <label>
+              Channel Name
+              <input type="text" id="learn-channel-name" placeholder="Strobe">
+            </label>
+            <label>
+              Channel Kind
+              <select id="learn-channel-kind">
+                <option value="generic">Generic</option>
+                <option value="dimmer">Dimmer</option>
+                <option value="red">Red</option>
+                <option value="green">Green</option>
+                <option value="blue">Blue</option>
+                <option value="white">White</option>
+                <option value="strobe">Strobe</option>
+                <option value="mode">Mode</option>
+                <option value="speed">Speed</option>
+                <option value="pan">Pan</option>
+                <option value="tilt">Tilt</option>
+                <option value="pan_speed">Pan Speed</option>
+                <option value="strip_effect">Strip Effect</option>
+                <option value="effect_mode">Effect Mode</option>
+                <option value="macro">Macro</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="inline-controls learn-quick-kinds">
+            <button type="button" class="group-kind-btn learn-kind-btn" data-kind="dimmer">Dimmer</button>
+            <button type="button" class="group-kind-btn learn-kind-btn" data-kind="red">Red</button>
+            <button type="button" class="group-kind-btn learn-kind-btn" data-kind="green">Green</button>
+            <button type="button" class="group-kind-btn learn-kind-btn" data-kind="blue">Blue</button>
+            <button type="button" class="group-kind-btn learn-kind-btn" data-kind="white">White</button>
+            <button type="button" class="group-kind-btn learn-kind-btn" data-kind="strobe">Strobe</button>
+            <button type="button" class="group-kind-btn learn-kind-btn" data-kind="mode">Mode</button>
+            <button type="button" class="group-kind-btn learn-kind-btn" data-kind="speed">Speed</button>
+            <button type="button" class="group-kind-btn learn-kind-btn" data-kind="pan">Pan</button>
+            <button type="button" class="group-kind-btn learn-kind-btn" data-kind="tilt">Tilt</button>
+          </div>
+
+          <div class="inline-controls">
+            <button type="button" id="learn-save-channel-meta" class="btn primary">Save Channel Meta</button>
+            <button type="button" id="learn-clear-ranges" class="btn danger">Clear Channel Ranges</button>
+          </div>
+
+          <div class="grid-two">
+            <label>
+              Range Start
+              <input type="number" id="learn-range-start" min="0" max="255" value="0">
+            </label>
+            <label>
+              Range End
+              <input type="number" id="learn-range-end" min="0" max="255" value="255">
+            </label>
+          </div>
+          <label>
+            Range Label
+            <input type="text" id="learn-range-label" placeholder="Jump / Gradient / Voice ...">
+          </label>
+          <button type="button" id="learn-add-range" class="btn primary">Add Range To Channel</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel glass">
+      <div class="panel-head">
+        <h2>Live Control</h2>
+        <p>Knobs per fixture channel. Range chips jump to meaningful values with icons.</p>
+      </div>
+      <div id="fixture-board" class="fixture-board"></div>
+    </section>
+
+    <div id="toast" class="toast" aria-live="polite"></div>
+  </main>
+
+  <template id="channel-editor-template">
+    <div class="channel-editor-row">
+      <div class="grid-channel-fields">
+        <label>
+          Channel #
+          <input type="number" class="channel-index" min="1" value="1" required>
+        </label>
+        <label>
+          Name
+          <input type="text" class="channel-name" placeholder="Master Dimmer" required>
+        </label>
+        <label>
+          Type
+          <select class="channel-kind">
+            <option value="generic">Generic</option>
+            <option value="dimmer">Dimmer</option>
+            <option value="red">Red</option>
+            <option value="green">Green</option>
+            <option value="blue">Blue</option>
+            <option value="white">White</option>
+            <option value="strobe">Strobe</option>
+            <option value="mode">Mode</option>
+            <option value="speed">Speed</option>
+            <option value="pan">Pan</option>
+            <option value="tilt">Tilt</option>
+            <option value="pan_speed">Pan Speed</option>
+            <option value="strip_effect">Strip Effect</option>
+            <option value="effect_mode">Effect Mode</option>
+            <option value="macro">Macro</option>
+          </select>
+        </label>
+        <label>
+          Default
+          <input type="number" class="channel-default" min="0" max="255" value="0">
+        </label>
+      </div>
+
+      <div class="ranges-head">
+        <h4>Ranges</h4>
+        <button type="button" class="btn ghost add-range-btn">Add Range</button>
+      </div>
+      <div class="range-list"></div>
+
+      <button type="button" class="btn danger remove-channel-btn">Remove Channel</button>
+    </div>
+  </template>
+
+  <template id="range-editor-template">
+    <div class="range-row">
+      <label>
+        From
+        <input type="number" class="range-start" min="0" max="255" value="0">
+      </label>
+      <label>
+        To
+        <input type="number" class="range-end" min="0" max="255" value="255">
+      </label>
+      <label class="range-label-wrap">
+        Label
+        <input type="text" class="range-label" placeholder="No flicker">
+      </label>
+      <button type="button" class="btn danger remove-range-btn">Remove</button>
+    </div>
+  </template>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

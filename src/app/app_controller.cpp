@@ -1,0 +1,1368 @@
+#include "app_controller.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <fstream>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+
+#include "utils.hpp"
+
+namespace tuxdmx {
+
+namespace {
+
+bool getRequiredInt(const std::unordered_map<std::string, std::string>& form, const std::string& key, int& value,
+                    std::string& error) {
+  auto it = form.find(key);
+  if (it == form.end()) {
+    error = "Missing field: " + key;
+    return false;
+  }
+  if (!parseInt(it->second, value)) {
+    error = "Invalid integer field: " + key;
+    return false;
+  }
+  return true;
+}
+
+bool parseBoolLike(const std::unordered_map<std::string, std::string>& form, const std::string& key) {
+  auto it = form.find(key);
+  if (it == form.end()) {
+    return false;
+  }
+  const auto lowered = toLower(it->second);
+  return lowered == "1" || lowered == "true" || lowered == "on" || lowered == "yes";
+}
+
+std::string jsonBool(bool value) { return value ? "true" : "false"; }
+
+int midpoint(const ChannelRange& range) {
+  const int lo = clampDmx(range.startValue);
+  const int hi = clampDmx(range.endValue);
+  return lo + ((hi - lo) / 2);
+}
+
+bool containsKeyword(const std::string& text, const std::string& keyword) {
+  return toLower(text).find(toLower(keyword)) != std::string::npos;
+}
+
+std::optional<ChannelRange> pickRangeByKeywords(const std::vector<ChannelRange>& ranges,
+                                                const std::vector<std::string>& keywords) {
+  for (const auto& keyword : keywords) {
+    for (const auto& range : ranges) {
+      if (containsKeyword(range.label, keyword)) {
+        return range;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+std::vector<int> parseCsvInts(std::string_view csv) {
+  std::vector<int> values;
+  std::size_t start = 0;
+  while (start <= csv.size()) {
+    auto comma = csv.find(',', start);
+    if (comma == std::string_view::npos) {
+      comma = csv.size();
+    }
+
+    auto token = trim(csv.substr(start, comma - start));
+    int parsed = 0;
+    if (!token.empty() && parseInt(token, parsed)) {
+      values.push_back(parsed);
+    }
+
+    if (comma == csv.size()) {
+      break;
+    }
+    start = comma + 1;
+  }
+
+  return values;
+}
+
+std::array<int, 3> hsvToRgb(float hueDeg, float saturation, float value) {
+  const float h = std::fmod(std::max(hueDeg, 0.0F), 360.0F) / 60.0F;
+  const float c = value * saturation;
+  const float x = c * (1.0F - std::fabs(std::fmod(h, 2.0F) - 1.0F));
+  const float m = value - c;
+
+  float r = 0.0F;
+  float g = 0.0F;
+  float b = 0.0F;
+
+  if (h < 1.0F) {
+    r = c;
+    g = x;
+  } else if (h < 2.0F) {
+    r = x;
+    g = c;
+  } else if (h < 3.0F) {
+    g = c;
+    b = x;
+  } else if (h < 4.0F) {
+    g = x;
+    b = c;
+  } else if (h < 5.0F) {
+    r = x;
+    b = c;
+  } else {
+    r = c;
+    b = x;
+  }
+
+  return {
+      clampDmx(static_cast<int>((r + m) * 255.0F)),
+      clampDmx(static_cast<int>((g + m) * 255.0F)),
+      clampDmx(static_cast<int>((b + m) * 255.0F)),
+  };
+}
+
+void appendTemplateJson(std::ostringstream& ss, const FixtureTemplate& t) {
+  ss << '{';
+  ss << "\"id\":" << t.id << ',';
+  ss << "\"name\":\"" << jsonEscape(t.name) << "\",";
+  ss << "\"description\":\"" << jsonEscape(t.description) << "\",";
+  ss << "\"footprintChannels\":" << t.footprintChannels << ',';
+  ss << "\"channels\":[";
+
+  bool firstChannel = true;
+  for (const auto& c : t.channels) {
+    if (!firstChannel) {
+      ss << ',';
+    }
+    firstChannel = false;
+
+    ss << '{';
+    ss << "\"id\":" << c.id << ',';
+    ss << "\"channelIndex\":" << c.channelIndex << ',';
+    ss << "\"name\":\"" << jsonEscape(c.name) << "\",";
+    ss << "\"kind\":\"" << jsonEscape(c.kind) << "\",";
+    ss << "\"defaultValue\":" << c.defaultValue << ',';
+    ss << "\"ranges\":[";
+
+    bool firstRange = true;
+    for (const auto& r : c.ranges) {
+      if (!firstRange) {
+        ss << ',';
+      }
+      firstRange = false;
+      ss << '{';
+      ss << "\"id\":" << r.id << ',';
+      ss << "\"startValue\":" << r.startValue << ',';
+      ss << "\"endValue\":" << r.endValue << ',';
+      ss << "\"label\":\"" << jsonEscape(r.label) << "\"";
+      ss << '}';
+    }
+
+    ss << ']';
+    ss << '}';
+  }
+
+  ss << ']';
+  ss << '}';
+}
+
+void appendTemplateArrayJson(std::ostringstream& ss, const std::vector<FixtureTemplate>& templates) {
+  ss << '[';
+  bool first = true;
+  for (const auto& t : templates) {
+    if (!first) {
+      ss << ',';
+    }
+    first = false;
+    appendTemplateJson(ss, t);
+  }
+  ss << ']';
+}
+
+void appendFixtureArrayJson(std::ostringstream& ss, const std::vector<FixtureInstance>& fixtures,
+                            const std::unordered_map<int, FixtureTemplate>& templateMap) {
+  ss << '[';
+  bool firstFixture = true;
+  for (const auto& f : fixtures) {
+    if (!firstFixture) {
+      ss << ',';
+    }
+    firstFixture = false;
+
+    ss << '{';
+    ss << "\"id\":" << f.id << ',';
+    ss << "\"name\":\"" << jsonEscape(f.name) << "\",";
+    ss << "\"templateId\":" << f.templateId << ',';
+    ss << "\"templateName\":\"" << jsonEscape(f.templateName) << "\",";
+    ss << "\"universe\":" << f.universe << ',';
+    ss << "\"startAddress\":" << f.startAddress << ',';
+    ss << "\"channelCount\":" << f.channelCount << ',';
+    ss << "\"enabled\":" << jsonBool(f.enabled) << ',';
+    ss << "\"channels\":[";
+
+    auto templateIt = templateMap.find(f.templateId);
+
+    bool firstChannel = true;
+    for (int idx = 1; idx <= f.channelCount; ++idx) {
+      if (!firstChannel) {
+        ss << ',';
+      }
+      firstChannel = false;
+
+      std::string channelName = "Channel " + std::to_string(idx);
+      std::string channelKind = "generic";
+      int channelId = 0;
+      std::vector<ChannelRange> ranges;
+
+      if (templateIt != templateMap.end()) {
+        for (const auto& tc : templateIt->second.channels) {
+          if (tc.channelIndex == idx) {
+            channelId = tc.id;
+            channelName = tc.name;
+            channelKind = tc.kind;
+            ranges = tc.ranges;
+            break;
+          }
+        }
+      }
+
+      int value = 0;
+      if (auto valueIt = f.channelValues.find(idx); valueIt != f.channelValues.end()) {
+        value = valueIt->second;
+      }
+
+      ss << '{';
+      ss << "\"channelId\":" << channelId << ',';
+      ss << "\"channelIndex\":" << idx << ',';
+      ss << "\"name\":\"" << jsonEscape(channelName) << "\",";
+      ss << "\"kind\":\"" << jsonEscape(channelKind) << "\",";
+      ss << "\"value\":" << value << ',';
+      ss << "\"ranges\":[";
+
+      bool firstRange = true;
+      for (const auto& range : ranges) {
+        if (!firstRange) {
+          ss << ',';
+        }
+        firstRange = false;
+        ss << '{';
+        ss << "\"startValue\":" << range.startValue << ',';
+        ss << "\"endValue\":" << range.endValue << ',';
+        ss << "\"label\":\"" << jsonEscape(range.label) << "\"";
+        ss << '}';
+      }
+
+      ss << ']';
+      ss << '}';
+    }
+
+    ss << ']';
+    ss << '}';
+  }
+
+  ss << ']';
+}
+
+void appendGroupArrayJson(std::ostringstream& ss, const std::vector<FixtureGroup>& groups) {
+  ss << '[';
+
+  bool firstGroup = true;
+  for (const auto& group : groups) {
+    if (!firstGroup) {
+      ss << ',';
+    }
+    firstGroup = false;
+
+    ss << '{';
+    ss << "\"id\":" << group.id << ',';
+    ss << "\"name\":\"" << jsonEscape(group.name) << "\",";
+    ss << "\"fixtureIds\":[";
+
+    bool firstFixture = true;
+    for (int fixtureId : group.fixtureIds) {
+      if (!firstFixture) {
+        ss << ',';
+      }
+      firstFixture = false;
+      ss << fixtureId;
+    }
+
+    ss << ']';
+    ss << '}';
+  }
+
+  ss << ']';
+}
+
+}  // namespace
+
+AppController::AppController(std::string dbPath, std::string webRoot)
+    : dbPath_(std::move(dbPath)), webRoot_(std::move(webRoot)), db_(dbPath_) {
+  std::random_device rd;
+  reactiveRng_.seed(rd());
+}
+
+AppController::~AppController() { shutdown(); }
+
+bool AppController::initialize(std::string& error) {
+  if (!db_.initialize(error)) {
+    return false;
+  }
+
+  if (!db_.seedAliExpressRgbPar(error)) {
+    return false;
+  }
+
+  if (!db_.seedMiraDye(error)) {
+    return false;
+  }
+
+  rebuildAllUniversesFromDatabase();
+
+  dmx_.start();
+
+  audio_.setTickCallback([this](const AudioMetrics& metrics) { onAudioMetrics(metrics); });
+  audio_.start();
+
+  return true;
+}
+
+void AppController::shutdown() {
+  audio_.stop();
+  dmx_.stop();
+}
+
+HttpResponse AppController::jsonError(int status, const std::string& message) {
+  HttpResponse response;
+  response.status = status;
+  response.contentType = "application/json; charset=utf-8";
+  response.body = "{\"ok\":false,\"error\":\"" + jsonEscape(message) + "\"}";
+  return response;
+}
+
+HttpResponse AppController::jsonOk(const std::string& payload, int status) {
+  HttpResponse response;
+  response.status = status;
+  response.contentType = "application/json; charset=utf-8";
+  response.body = payload;
+  return response;
+}
+
+std::vector<int> AppController::sortedUniverseList(const std::vector<FixtureInstance>& fixtures,
+                                                   const std::vector<int>& knownFromEngine) {
+  std::set<int> universes;
+  for (int universe : knownFromEngine) {
+    if (universe >= 1) {
+      universes.insert(universe);
+    }
+  }
+  for (const auto& fixture : fixtures) {
+    if (fixture.universe >= 1) {
+      universes.insert(fixture.universe);
+    }
+  }
+  if (universes.empty()) {
+    universes.insert(1);
+  }
+
+  return {universes.begin(), universes.end()};
+}
+
+std::vector<AppController::FixtureResolvedView> AppController::resolveFixtures(std::string& error) {
+  const auto fixtures = db_.listFixtures(error);
+  if (!error.empty()) {
+    return {};
+  }
+
+  const auto templates = db_.listTemplates(error);
+  if (!error.empty()) {
+    return {};
+  }
+
+  std::unordered_map<int, std::vector<TemplateChannel>> templateChannels;
+  for (const auto& t : templates) {
+    templateChannels[t.id] = t.channels;
+  }
+
+  std::vector<FixtureResolvedView> resolved;
+  resolved.reserve(fixtures.size());
+
+  for (const auto& fixture : fixtures) {
+    FixtureResolvedView view;
+    view.fixture = fixture;
+    if (auto it = templateChannels.find(fixture.templateId); it != templateChannels.end()) {
+      view.templateChannels = it->second;
+    }
+    resolved.push_back(std::move(view));
+  }
+
+  return resolved;
+}
+
+std::string AppController::buildStatusJson() {
+  const auto dmxStatus = dmx_.status();
+  const auto metrics = audio_.currentMetrics();
+
+  std::ostringstream ss;
+  ss << "{\"ok\":true,\"dmx\":{";
+  ss << "\"connected\":" << jsonBool(dmxStatus.connected) << ',';
+  ss << "\"port\":\"" << jsonEscape(dmxStatus.port) << "\",";
+  ss << "\"serial\":\"" << jsonEscape(dmxStatus.serial) << "\",";
+  ss << "\"firmwareMajor\":" << dmxStatus.firmwareMajor << ',';
+  ss << "\"firmwareMinor\":" << dmxStatus.firmwareMinor << ',';
+  ss << "\"lastError\":\"" << jsonEscape(dmxStatus.lastError) << "\",";
+  ss << "\"outputUniverse\":" << dmx_.outputUniverse() << ',';
+  ss << "\"knownUniverses\":[";
+
+  const auto knownUniverses = dmx_.knownUniverses();
+  bool firstUniverse = true;
+  for (int universe : knownUniverses) {
+    if (!firstUniverse) {
+      ss << ',';
+    }
+    firstUniverse = false;
+    ss << universe;
+  }
+  ss << ']';
+
+  ss << "},\"audio\":{";
+  ss << "\"reactiveMode\":" << jsonBool(audio_.reactiveMode()) << ',';
+  ss << "\"backend\":\"" << jsonEscape(audio_.backendName()) << "\",";
+  ss << "\"energy\":" << metrics.energy << ',';
+  ss << "\"bass\":" << metrics.bass << ',';
+  ss << "\"treble\":" << metrics.treble << ',';
+  ss << "\"bpm\":" << metrics.bpm << ',';
+  ss << "\"beat\":" << jsonBool(metrics.beat);
+  ss << "}}";
+
+  return ss.str();
+}
+
+std::string AppController::buildStateJson() {
+  std::string error;
+  const auto templates = db_.listTemplates(error);
+  if (!error.empty()) {
+    return "{\"ok\":false,\"error\":\"" + jsonEscape(error) + "\"}";
+  }
+
+  const auto fixtures = db_.listFixtures(error);
+  if (!error.empty()) {
+    return "{\"ok\":false,\"error\":\"" + jsonEscape(error) + "\"}";
+  }
+
+  const auto groups = db_.listGroups(error);
+  if (!error.empty()) {
+    return "{\"ok\":false,\"error\":\"" + jsonEscape(error) + "\"}";
+  }
+
+  std::unordered_map<int, FixtureTemplate> templateMap;
+  for (const auto& t : templates) {
+    templateMap[t.id] = t;
+  }
+
+  const auto dmxStatus = dmx_.status();
+  const auto metrics = audio_.currentMetrics();
+  const auto outputUniverse = dmx_.outputUniverse();
+  const auto universes = sortedUniverseList(fixtures, dmx_.knownUniverses());
+
+  std::ostringstream ss;
+  ss << "{\"ok\":true";
+
+  ss << ",\"dmx\":{";
+  ss << "\"connected\":" << jsonBool(dmxStatus.connected) << ',';
+  ss << "\"port\":\"" << jsonEscape(dmxStatus.port) << "\",";
+  ss << "\"serial\":\"" << jsonEscape(dmxStatus.serial) << "\",";
+  ss << "\"firmwareMajor\":" << dmxStatus.firmwareMajor << ',';
+  ss << "\"firmwareMinor\":" << dmxStatus.firmwareMinor << ',';
+  ss << "\"lastError\":\"" << jsonEscape(dmxStatus.lastError) << "\",";
+  ss << "\"outputUniverse\":" << outputUniverse << ',';
+  ss << "\"knownUniverses\":[";
+
+  bool firstUniverse = true;
+  for (int universe : universes) {
+    if (!firstUniverse) {
+      ss << ',';
+    }
+    firstUniverse = false;
+    ss << universe;
+  }
+  ss << ']';
+  ss << '}';
+
+  ss << ",\"audio\":{";
+  ss << "\"reactiveMode\":" << jsonBool(audio_.reactiveMode()) << ',';
+  ss << "\"backend\":\"" << jsonEscape(audio_.backendName()) << "\",";
+  ss << "\"energy\":" << metrics.energy << ',';
+  ss << "\"bass\":" << metrics.bass << ',';
+  ss << "\"treble\":" << metrics.treble << ',';
+  ss << "\"bpm\":" << metrics.bpm << ',';
+  ss << "\"beat\":" << jsonBool(metrics.beat);
+  ss << '}';
+
+  ss << ",\"templates\":";
+  appendTemplateArrayJson(ss, templates);
+
+  ss << ",\"fixtures\":";
+  appendFixtureArrayJson(ss, fixtures, templateMap);
+
+  ss << ",\"groups\":";
+  appendGroupArrayJson(ss, groups);
+
+  ss << '}';
+  return ss.str();
+}
+
+void AppController::rebuildAllUniversesFromDatabase() {
+  std::string error;
+  const auto fixtures = db_.listFixtures(error);
+  if (!error.empty()) {
+    return;
+  }
+
+  std::set<int> universes;
+  for (const auto& fixture : fixtures) {
+    if (fixture.universe >= 1) {
+      universes.insert(fixture.universe);
+    }
+  }
+  universes.insert(dmx_.outputUniverse());
+
+  for (int universe : universes) {
+    auto patches = db_.loadUniversePatch(universe, error);
+    if (!error.empty()) {
+      return;
+    }
+
+    std::array<std::uint8_t, 512> frame{};
+    frame.fill(0);
+
+    for (const auto& patch : patches) {
+      if (patch.absoluteAddress >= 1 && patch.absoluteAddress <= 512) {
+        frame[static_cast<std::size_t>(patch.absoluteAddress - 1)] = static_cast<std::uint8_t>(clampDmx(patch.value));
+      }
+    }
+
+    dmx_.replaceUniverse(universe, frame);
+  }
+}
+
+void AppController::onAudioMetrics(const AudioMetrics& metrics) {
+  if (!audio_.reactiveMode()) {
+    return;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (!metrics.beat && lastReactiveApply_.time_since_epoch().count() != 0 &&
+      now - lastReactiveApply_ < std::chrono::milliseconds(45)) {
+    return;
+  }
+  lastReactiveApply_ = now;
+
+  std::scoped_lock lock(reactiveMutex_);
+
+  std::string error;
+  const auto fixtures = resolveFixtures(error);
+  if (!error.empty()) {
+    return;
+  }
+
+  rebuildAllUniversesFromDatabase();
+
+  std::uniform_real_distribution<float> hueJitter(-4.0F, 4.0F);
+
+  for (const auto& resolved : fixtures) {
+    const auto& fixture = resolved.fixture;
+    if (!fixture.enabled || fixture.startAddress < 1 || fixture.startAddress > 512) {
+      continue;
+    }
+
+    auto& state = reactiveStates_[fixture.id];
+
+    // Smoothed energy keeps fixture movement musical instead of twitchy.
+    // Increase/decrease the blend factors to get snappier or smoother response.
+    state.smoothedEnergy = state.smoothedEnergy * 0.82F + metrics.energy * 0.18F;
+
+    // Hue speed follows tempo and beat energy so color movement feels synced.
+    state.hue += 0.8F + (metrics.bpm / 90.0F) + (state.smoothedEnergy * 2.4F);
+    state.hue += hueJitter(reactiveRng_);
+    if (state.hue < 0.0F) {
+      state.hue += 360.0F;
+    }
+    if (state.hue >= 360.0F) {
+      state.hue -= 360.0F;
+    }
+
+    const float colorValue = std::clamp(0.26F + state.smoothedEnergy * 0.74F, 0.0F, 1.0F);
+    const auto rgb = hsvToRgb(state.hue + (metrics.beat ? 12.0F : 0.0F), 0.9F, colorValue);
+
+    std::vector<ChannelPatch> patches;
+
+    for (const auto& channel : resolved.templateChannels) {
+      if (channel.channelIndex < 1 || channel.channelIndex > fixture.channelCount) {
+        continue;
+      }
+
+      const auto kind = toLower(channel.kind);
+      int nextValue = -1;
+
+      const float phase = state.hue * 0.0174532925F;
+
+      if (kind == "dimmer") {
+        // Master dimmer combines overall loudness and bass accents.
+        const float dimmer = 30.0F + (state.smoothedEnergy * 170.0F) + (metrics.bass * 46.0F) + (metrics.beat ? 18.0F : 0.0F);
+        nextValue = clampDmx(static_cast<int>(std::round(dimmer)));
+      } else if (kind == "pan") {
+        // Pan runs wide musical sweeps. Amplitude grows with energy.
+        const float amplitude = 45.0F + (state.smoothedEnergy * 78.0F);
+        const float pan = 128.0F + std::sin(phase * 1.13F) * amplitude;
+        nextValue = clampDmx(static_cast<int>(std::round(pan)));
+      } else if (kind == "tilt") {
+        // Tilt has a narrower counter motion to keep movement readable.
+        const float amplitude = 22.0F + (state.smoothedEnergy * 56.0F);
+        const float tilt = 128.0F + std::cos((phase * 0.93F) + 0.8F) * amplitude;
+        nextValue = clampDmx(static_cast<int>(std::round(tilt)));
+      } else if (kind == "pan_speed") {
+        // This channel is documented as 0=fast, 255=slow, so we invert energy.
+        // High music energy => lower DMX value => faster movement.
+        float speedValue = 230.0F - (state.smoothedEnergy * 185.0F) - (metrics.beat ? 16.0F : 0.0F);
+        speedValue = std::clamp(speedValue, 15.0F, 255.0F);
+        nextValue = static_cast<int>(std::round(speedValue));
+      } else if (kind == "red") {
+        nextValue = rgb[0];
+      } else if (kind == "green") {
+        nextValue = rgb[1];
+      } else if (kind == "blue") {
+        nextValue = rgb[2];
+      } else if (kind == "white") {
+        // White is used as a sparkle accent on transients/treble.
+        const float white = 8.0F + (metrics.treble * 130.0F) + (metrics.beat ? 70.0F : 0.0F);
+        nextValue = clampDmx(static_cast<int>(std::round(white)));
+      } else if (kind == "speed") {
+        // Effect speed scales with measured BPM and overall energy.
+        const float speed = 14.0F + (metrics.bpm * 0.55F) + (state.smoothedEnergy * 86.0F);
+        nextValue = clampDmx(static_cast<int>(std::round(speed)));
+      } else if (kind == "strobe") {
+        std::optional<ChannelRange> targetRange;
+        if (metrics.beat || metrics.energy > 0.72F) {
+          targetRange = pickRangeByKeywords(channel.ranges, {"strobe", "flash", "flicker"});
+        } else {
+          targetRange = pickRangeByKeywords(channel.ranges, {"no", "off", "manual", "static"});
+        }
+
+        if (targetRange.has_value()) {
+          nextValue = midpoint(*targetRange);
+        } else {
+          nextValue = metrics.beat ? 160 : 0;
+        }
+      } else if (kind == "mode" || kind == "strip_effect" || kind == "effect") {
+        std::vector<std::string> desired;
+
+        if (kind == "strip_effect" || kind == "effect") {
+          if (state.smoothedEnergy < 0.22F) {
+            desired = {"nf", "off", "none"};
+          } else if (metrics.beat || state.smoothedEnergy > 0.62F) {
+            desired = {"self-drive", "self drive", "auto", "effect"};
+          } else {
+            desired = {"fixed", "color"};
+          }
+        } else {
+          // Mode selection priorities use the labels you define in each range.
+          // Tweak keyword sets below to map your own fixture vocabulary.
+          if (metrics.bass > 0.75F) {
+            desired = {"voice", "sound", "music"};
+          } else if (metrics.beat && metrics.energy > 0.65F) {
+            desired = {"jump", "flash"};
+          } else if (metrics.energy > 0.50F) {
+            desired = {"pulse", "variable"};
+          } else if (metrics.energy > 0.30F) {
+            desired = {"gradient", "fade"};
+          } else {
+            desired = {"manual", "static"};
+          }
+        }
+
+        auto range = pickRangeByKeywords(channel.ranges, desired);
+
+        if (!range.has_value() && !channel.ranges.empty()) {
+          if (metrics.beat) {
+            state.modeCursor = (state.modeCursor + 1) % channel.ranges.size();
+          }
+          range = channel.ranges[state.modeCursor % channel.ranges.size()];
+        }
+
+        if (range.has_value()) {
+          nextValue = midpoint(*range);
+        } else {
+          nextValue = 0;
+        }
+      } else if (kind == "effect_mode") {
+        std::vector<std::string> desired;
+
+        if (metrics.treble > 0.68F) {
+          desired = {"chromatic", "aberration", "prism"};
+        } else if (state.smoothedEnergy > 0.44F) {
+          desired = {"gradient", "fade", "tint"};
+        } else if (state.smoothedEnergy > 0.20F) {
+          desired = {"shift", "color"};
+        } else {
+          desired = {"nf", "off", "none"};
+        }
+
+        auto range = pickRangeByKeywords(channel.ranges, desired);
+        if (!range.has_value() && !channel.ranges.empty()) {
+          range = channel.ranges[static_cast<std::size_t>(state.modeCursor % channel.ranges.size())];
+        }
+
+        if (range.has_value()) {
+          nextValue = midpoint(*range);
+        } else {
+          nextValue = 0;
+        }
+      } else if (kind == "macro") {
+        std::vector<std::string> desired;
+
+        // Macro logic intentionally avoids reset ranges during autoplay.
+        if (metrics.bass > 0.72F) {
+          desired = {"voice", "sound", "audio"};
+        } else if (state.smoothedEnergy > 0.38F) {
+          desired = {"random", "walk"};
+        } else {
+          desired = {"nf", "off", "none", "manual"};
+        }
+
+        auto range = pickRangeByKeywords(channel.ranges, desired);
+
+        if (!range.has_value() && !channel.ranges.empty()) {
+          for (const auto& candidate : channel.ranges) {
+            if (!containsKeyword(candidate.label, "reset")) {
+              range = candidate;
+              break;
+            }
+          }
+        }
+
+        if (range.has_value()) {
+          nextValue = midpoint(*range);
+        } else {
+          nextValue = 0;
+        }
+      }
+
+      if (nextValue < 0) {
+        continue;
+      }
+
+      ChannelPatch patch;
+      if (!db_.updateFixtureChannelValue(fixture.id, channel.channelIndex, nextValue, patch, error)) {
+        continue;
+      }
+      patches.push_back(patch);
+    }
+
+    for (const auto& patch : patches) {
+      dmx_.setChannel(patch.universe, patch.absoluteAddress, patch.value);
+    }
+  }
+}
+
+HttpResponse AppController::serveStatic(const std::string& rawPath) {
+  std::string path = rawPath;
+  if (path.empty() || path == "/") {
+    path = "/index.html";
+  }
+
+  if (!path.empty() && path.front() == '/') {
+    path.erase(path.begin());
+  }
+
+  const auto relative = std::filesystem::path(path).lexically_normal();
+  if (relative.empty() || relative.string().find("..") != std::string::npos) {
+    return jsonError(404, "File not found");
+  }
+
+  auto filePath = webRoot_ / relative;
+  if (!std::filesystem::exists(filePath)) {
+    if (relative.extension().empty()) {
+      filePath = webRoot_ / "index.html";
+    } else {
+      return jsonError(404, "File not found");
+    }
+  }
+
+  std::ifstream file(filePath, std::ios::binary);
+  if (!file) {
+    return jsonError(404, "Unable to open static file");
+  }
+
+  std::ostringstream buffer;
+  buffer << file.rdbuf();
+
+  HttpResponse response;
+  response.status = 200;
+  response.contentType = guessMimeType(filePath);
+  response.body = buffer.str();
+  return response;
+}
+
+HttpResponse AppController::handleApi(const HttpRequest& request) {
+  const auto segments = splitPath(request.path);
+
+  if (request.method == "GET" && request.path == "/api/status") {
+    return jsonOk(buildStatusJson());
+  }
+
+  if (request.method == "GET" && request.path == "/api/state") {
+    return jsonOk(buildStateJson());
+  }
+
+  if (request.method == "GET" && request.path == "/api/templates") {
+    std::string error;
+    const auto templates = db_.listTemplates(error);
+    if (!error.empty()) {
+      return jsonError(500, error);
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"templates\":";
+    appendTemplateArrayJson(ss, templates);
+    ss << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "GET" && request.path == "/api/templates/export") {
+    std::string error;
+    const auto templates = db_.listTemplates(error);
+    if (!error.empty()) {
+      return jsonError(500, error);
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"version\":1,\"templates\":";
+    appendTemplateArrayJson(ss, templates);
+    ss << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "GET" && request.path == "/api/fixtures") {
+    std::string error;
+    const auto fixtures = db_.listFixtures(error);
+    if (!error.empty()) {
+      return jsonError(500, error);
+    }
+
+    const auto templates = db_.listTemplates(error);
+    if (!error.empty()) {
+      return jsonError(500, error);
+    }
+
+    std::unordered_map<int, FixtureTemplate> templateMap;
+    for (const auto& t : templates) {
+      templateMap[t.id] = t;
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"fixtures\":";
+    appendFixtureArrayJson(ss, fixtures, templateMap);
+    ss << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "GET" && request.path == "/api/groups") {
+    std::string error;
+    const auto groups = db_.listGroups(error);
+    if (!error.empty()) {
+      return jsonError(500, error);
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"groups\":";
+    appendGroupArrayJson(ss, groups);
+    ss << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/templates") {
+    auto form = parseFormEncoded(request.body);
+
+    auto nameIt = form.find("name");
+    if (nameIt == form.end() || trim(nameIt->second).empty()) {
+      return jsonError(422, "Template name is required");
+    }
+
+    const auto descriptionIt = form.find("description");
+    const auto description = descriptionIt == form.end() ? "" : descriptionIt->second;
+
+    std::string error;
+    const int templateId = db_.createTemplate(trim(nameIt->second), description, error);
+    if (templateId <= 0) {
+      if (error.find("UNIQUE") != std::string::npos) {
+        return jsonError(409, "Template name already exists");
+      }
+      return jsonError(500, error);
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"templateId\":" << templateId << '}';
+    return jsonOk(ss.str(), 201);
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "templates" &&
+      segments[3] == "channels") {
+    int templateId = 0;
+    if (!parseInt(segments[2], templateId)) {
+      return jsonError(400, "Invalid template id");
+    }
+
+    auto form = parseFormEncoded(request.body);
+    std::string error;
+    int channelIndex = 0;
+    if (!getRequiredInt(form, "channel_index", channelIndex, error)) {
+      return jsonError(422, error);
+    }
+
+    auto nameIt = form.find("name");
+    if (nameIt == form.end() || trim(nameIt->second).empty()) {
+      return jsonError(422, "Channel name is required");
+    }
+
+    auto kindIt = form.find("kind");
+    std::string kind = kindIt == form.end() ? "generic" : trim(kindIt->second);
+    if (kind.empty()) {
+      kind = "generic";
+    }
+
+    int defaultValue = 0;
+    if (auto dv = form.find("default_value"); dv != form.end() && !dv->second.empty()) {
+      if (!parseInt(dv->second, defaultValue)) {
+        return jsonError(422, "default_value must be an integer");
+      }
+    }
+
+    const int channelId = db_.addTemplateChannel(templateId, channelIndex, trim(nameIt->second), kind, defaultValue, error);
+    if (channelId <= 0) {
+      if (error.find("UNIQUE") != std::string::npos) {
+        return jsonError(409, "Channel index already exists for this template");
+      }
+      return jsonError(500, error);
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"channelId\":" << channelId << '}';
+    return jsonOk(ss.str(), 201);
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "channels" &&
+      segments[3] == "ranges") {
+    int channelId = 0;
+    if (!parseInt(segments[2], channelId)) {
+      return jsonError(400, "Invalid channel id");
+    }
+
+    auto form = parseFormEncoded(request.body);
+    std::string error;
+    int startValue = 0;
+    int endValue = 0;
+
+    if (!getRequiredInt(form, "start_value", startValue, error) || !getRequiredInt(form, "end_value", endValue, error)) {
+      return jsonError(422, error);
+    }
+
+    auto labelIt = form.find("label");
+    if (labelIt == form.end() || trim(labelIt->second).empty()) {
+      return jsonError(422, "Range label is required");
+    }
+
+    if (endValue < startValue) {
+      std::swap(startValue, endValue);
+    }
+
+    const int rangeId = db_.addChannelRange(channelId, startValue, endValue, trim(labelIt->second), error);
+    if (rangeId <= 0) {
+      return jsonError(500, error);
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"rangeId\":" << rangeId << '}';
+    return jsonOk(ss.str(), 201);
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "channels" &&
+      segments[3] == "update") {
+    int channelId = 0;
+    if (!parseInt(segments[2], channelId)) {
+      return jsonError(400, "Invalid channel id");
+    }
+
+    auto form = parseFormEncoded(request.body);
+    auto nameIt = form.find("name");
+    if (nameIt == form.end() || trim(nameIt->second).empty()) {
+      return jsonError(422, "Channel name is required");
+    }
+
+    auto kindIt = form.find("kind");
+    std::string kind = kindIt == form.end() ? "generic" : trim(kindIt->second);
+    if (kind.empty()) {
+      kind = "generic";
+    }
+
+    int defaultValue = 0;
+    std::string error;
+    if (auto defaultIt = form.find("default_value"); defaultIt != form.end() && !defaultIt->second.empty()) {
+      if (!parseInt(defaultIt->second, defaultValue)) {
+        return jsonError(422, "default_value must be an integer");
+      }
+    }
+
+    if (!db_.updateTemplateChannel(channelId, trim(nameIt->second), kind, defaultValue, error)) {
+      return jsonError(422, error);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && segments.size() == 5 && segments[0] == "api" && segments[1] == "channels" &&
+      segments[3] == "ranges" && segments[4] == "clear") {
+    int channelId = 0;
+    if (!parseInt(segments[2], channelId)) {
+      return jsonError(400, "Invalid channel id");
+    }
+
+    std::string error;
+    if (!db_.clearChannelRanges(channelId, error)) {
+      return jsonError(422, error);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && request.path == "/api/fixtures") {
+    auto form = parseFormEncoded(request.body);
+
+    auto nameIt = form.find("name");
+    if (nameIt == form.end() || trim(nameIt->second).empty()) {
+      return jsonError(422, "Fixture name is required");
+    }
+
+    int templateId = 0;
+    int universe = 1;
+    int startAddress = 0;
+    int channelCount = 0;
+    std::string error;
+
+    if (!getRequiredInt(form, "template_id", templateId, error) || !getRequiredInt(form, "start_address", startAddress, error)) {
+      return jsonError(422, error);
+    }
+
+    if (auto universeIt = form.find("universe"); universeIt != form.end() && !universeIt->second.empty()) {
+      if (!parseInt(universeIt->second, universe)) {
+        return jsonError(422, "Universe must be an integer");
+      }
+    }
+
+    if (auto channelIt = form.find("channel_count"); channelIt != form.end() && !channelIt->second.empty()) {
+      if (!parseInt(channelIt->second, channelCount)) {
+        return jsonError(422, "channel_count must be an integer");
+      }
+    }
+
+    const bool allowOverlap = parseBoolLike(form, "allow_overlap");
+
+    auto result = db_.createFixture(trim(nameIt->second), templateId, universe, startAddress, channelCount, allowOverlap);
+    if (!result.ok) {
+      if (result.error.find("overlaps") != std::string::npos) {
+        return jsonError(409, result.error);
+      }
+      return jsonError(422, result.error);
+    }
+
+    rebuildAllUniversesFromDatabase();
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"fixtureId\":" << result.fixtureId << ",\"channelCount\":" << result.channelCount
+       << '}';
+    return jsonOk(ss.str(), 201);
+  }
+
+  if (request.method == "POST" && segments.size() == 5 && segments[0] == "api" && segments[1] == "fixtures" &&
+      segments[3] == "channels") {
+    int fixtureId = 0;
+    int channelIndex = 0;
+
+    if (!parseInt(segments[2], fixtureId) || !parseInt(segments[4], channelIndex)) {
+      return jsonError(400, "Invalid fixture/channel path");
+    }
+
+    auto form = parseFormEncoded(request.body);
+    std::string error;
+    int value = 0;
+
+    if (!getRequiredInt(form, "value", value, error)) {
+      return jsonError(422, error);
+    }
+
+    ChannelPatch patch;
+    if (!db_.updateFixtureChannelValue(fixtureId, channelIndex, value, patch, error)) {
+      return jsonError(422, error);
+    }
+
+    dmx_.setChannel(patch.universe, patch.absoluteAddress, patch.value);
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"absoluteAddress\":" << patch.absoluteAddress << ",\"value\":" << patch.value << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "fixtures" &&
+      segments[3] == "enabled") {
+    int fixtureId = 0;
+    if (!parseInt(segments[2], fixtureId)) {
+      return jsonError(400, "Invalid fixture id");
+    }
+
+    auto form = parseFormEncoded(request.body);
+    const bool enabled = parseBoolLike(form, "enabled");
+
+    std::string error;
+    if (!db_.setFixtureEnabled(fixtureId, enabled, error)) {
+      return jsonError(422, error);
+    }
+
+    rebuildAllUniversesFromDatabase();
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && request.path == "/api/groups") {
+    auto form = parseFormEncoded(request.body);
+    auto nameIt = form.find("name");
+    if (nameIt == form.end() || trim(nameIt->second).empty()) {
+      return jsonError(422, "Group name is required");
+    }
+
+    std::string error;
+    const int groupId = db_.createGroup(trim(nameIt->second), error);
+    if (groupId <= 0) {
+      if (error.find("UNIQUE") != std::string::npos) {
+        return jsonError(409, "Group name already exists");
+      }
+      return jsonError(500, error);
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"groupId\":" << groupId << '}';
+    return jsonOk(ss.str(), 201);
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "groups" &&
+      segments[3] == "fixtures") {
+    int groupId = 0;
+    if (!parseInt(segments[2], groupId)) {
+      return jsonError(400, "Invalid group id");
+    }
+
+    auto form = parseFormEncoded(request.body);
+    auto fixtureIdsIt = form.find("fixture_ids");
+    const auto fixtureIds = fixtureIdsIt == form.end() ? std::vector<int>{} : parseCsvInts(fixtureIdsIt->second);
+
+    std::string error;
+    if (!db_.setGroupFixtures(groupId, fixtureIds, error)) {
+      return jsonError(422, error);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "groups" &&
+      segments[3] == "delete") {
+    int groupId = 0;
+    if (!parseInt(segments[2], groupId)) {
+      return jsonError(400, "Invalid group id");
+    }
+
+    std::string error;
+    if (!db_.deleteGroup(groupId, error)) {
+      return jsonError(422, error);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && segments.size() == 5 && segments[0] == "api" && segments[1] == "groups" &&
+      segments[3] == "kinds") {
+    int groupId = 0;
+    if (!parseInt(segments[2], groupId)) {
+      return jsonError(400, "Invalid group id");
+    }
+    const std::string targetKind = toLower(segments[4]);
+
+    auto form = parseFormEncoded(request.body);
+    int value = 0;
+    std::string error;
+    if (!getRequiredInt(form, "value", value, error)) {
+      return jsonError(422, error);
+    }
+
+    const auto groups = db_.listGroups(error);
+    if (!error.empty()) {
+      return jsonError(500, error);
+    }
+
+    auto groupIt = std::find_if(groups.begin(), groups.end(), [groupId](const FixtureGroup& g) { return g.id == groupId; });
+    if (groupIt == groups.end()) {
+      return jsonError(404, "Group not found");
+    }
+
+    const auto resolved = resolveFixtures(error);
+    if (!error.empty()) {
+      return jsonError(500, error);
+    }
+
+    std::unordered_set<int> members(groupIt->fixtureIds.begin(), groupIt->fixtureIds.end());
+    int updated = 0;
+
+    for (const auto& fixtureView : resolved) {
+      if (!members.contains(fixtureView.fixture.id)) {
+        continue;
+      }
+
+      for (const auto& channel : fixtureView.templateChannels) {
+        if (toLower(channel.kind) != targetKind) {
+          continue;
+        }
+
+        ChannelPatch patch;
+        if (!db_.updateFixtureChannelValue(fixtureView.fixture.id, channel.channelIndex, value, patch, error)) {
+          continue;
+        }
+
+        dmx_.setChannel(patch.universe, patch.absoluteAddress, patch.value);
+        ++updated;
+      }
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"updated\":" << updated << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "groups" &&
+      segments[3] == "mode") {
+    int groupId = 0;
+    if (!parseInt(segments[2], groupId)) {
+      return jsonError(400, "Invalid group id");
+    }
+
+    auto form = parseFormEncoded(request.body);
+    auto labelIt = form.find("label");
+    if (labelIt == form.end() || trim(labelIt->second).empty()) {
+      return jsonError(422, "Mode label is required");
+    }
+
+    const std::string requestedLabel = trim(labelIt->second);
+    std::string error;
+
+    const auto groups = db_.listGroups(error);
+    if (!error.empty()) {
+      return jsonError(500, error);
+    }
+
+    auto groupIt = std::find_if(groups.begin(), groups.end(), [groupId](const FixtureGroup& g) { return g.id == groupId; });
+    if (groupIt == groups.end()) {
+      return jsonError(404, "Group not found");
+    }
+
+    const auto resolved = resolveFixtures(error);
+    if (!error.empty()) {
+      return jsonError(500, error);
+    }
+
+    std::unordered_set<int> members(groupIt->fixtureIds.begin(), groupIt->fixtureIds.end());
+    int updated = 0;
+
+    for (const auto& fixtureView : resolved) {
+      if (!members.contains(fixtureView.fixture.id)) {
+        continue;
+      }
+
+      for (const auto& channel : fixtureView.templateChannels) {
+        if (toLower(channel.kind) != "mode") {
+          continue;
+        }
+
+        std::optional<ChannelRange> selected;
+        for (const auto& range : channel.ranges) {
+          if (containsKeyword(range.label, requestedLabel)) {
+            selected = range;
+            break;
+          }
+        }
+
+        if (!selected.has_value() && !channel.ranges.empty()) {
+          selected = channel.ranges.front();
+        }
+
+        if (!selected.has_value()) {
+          continue;
+        }
+
+        ChannelPatch patch;
+        if (!db_.updateFixtureChannelValue(fixtureView.fixture.id, channel.channelIndex, midpoint(*selected), patch,
+                                           error)) {
+          continue;
+        }
+
+        dmx_.setChannel(patch.universe, patch.absoluteAddress, patch.value);
+        ++updated;
+      }
+    }
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"updated\":" << updated << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/dmx/output-universe") {
+    auto form = parseFormEncoded(request.body);
+    std::string error;
+    int universe = 1;
+    if (!getRequiredInt(form, "universe", universe, error)) {
+      return jsonError(422, error);
+    }
+
+    if (universe < 1) {
+      return jsonError(422, "Universe must be >= 1");
+    }
+
+    dmx_.setOutputUniverse(universe);
+    rebuildAllUniversesFromDatabase();
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"outputUniverse\":" << universe << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/audio/reactive") {
+    auto form = parseFormEncoded(request.body);
+    const bool enabled = parseBoolLike(form, "enabled");
+    audio_.setReactiveMode(enabled);
+
+    if (!enabled) {
+      rebuildAllUniversesFromDatabase();
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  return jsonError(404, "Unknown API route");
+}
+
+HttpResponse AppController::handleRequest(const HttpRequest& request) {
+  if (request.path.rfind("/api/", 0) == 0 || request.path == "/api") {
+    return handleApi(request);
+  }
+  return serveStatic(request.path);
+}
+
+}  // namespace tuxdmx
