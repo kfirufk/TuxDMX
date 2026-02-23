@@ -25,6 +25,7 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
 - Live control UI:
   - fixture cards with per-channel sliders (default)
   - optional knob mode toggle in toolbar
+  - MIDI learn/clear per live control node (fixture channels and group controls)
   - value-range chips
   - icon mapping for channel types and mode/range labels
   - fast blank-channel generator for unknown fixtures (manual missing workflow)
@@ -33,6 +34,7 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
   - lists available input devices
   - shows default/selected/active input
   - allows switching microphone source live
+  - MIDI mapping for reactive mode start/stop
 - Group UI + API:
   - create/delete groups
   - assign fixtures to groups
@@ -131,4 +133,5 @@ ctest --preset test-debug
 ## Notes
 
 - ENTTEC DMX USB Pro is a single physical DMX output. This app supports multiple universes in software and lets you select which universe is routed to the hardware output.
+- MIDI mapping in the web UI uses the browser Web MIDI API (best support in Chrome/Edge).
 - Reactive formulas are intentionally commented in `/Volumes/extreme-ssd/projects/dmx512/tuxdmx/src/app/app_controller.cpp` and `/Volumes/extreme-ssd/projects/dmx512/tuxdmx/src/audio/audio_engine.cpp` so you can tune behavior quickly.

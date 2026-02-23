@@ -109,6 +109,31 @@ body {
   align-items: center;
 }
 
+.audio-toggle-stack {
+  display: grid;
+  gap: 0.28rem;
+  align-items: center;
+}
+
+.audio-midi-row {
+  display: flex;
+  gap: 0.32rem;
+  align-items: center;
+}
+
+.btn.btn-mini {
+  padding: 0.38rem 0.56rem;
+  font-size: 0.76rem;
+  border-radius: 10px;
+}
+
+.audio-midi-label {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
 .control-style-switch {
   display: inline-flex;
   gap: 0.35rem;
@@ -174,7 +199,7 @@ body {
 .status-strip {
   border-radius: var(--radius-lg);
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 0.5rem;
   padding: 0.75rem;
 }
@@ -635,6 +660,38 @@ textarea {
   font-size: 0.69rem;
 }
 
+.midi-bind-row {
+  margin-top: 0.18rem;
+  width: 100%;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.midi-bind-label {
+  display: block;
+  text-align: center;
+  font-size: 0.62rem;
+  color: var(--ink-soft);
+  min-height: 1.05em;
+}
+
+.midi-bind-actions {
+  display: flex;
+  gap: 0.22rem;
+  justify-content: center;
+}
+
+.midi-bind-actions .btn {
+  padding: 0.24rem 0.4rem;
+  font-size: 0.62rem;
+  border-radius: 8px;
+}
+
+.midi-bind-row.is-learning .midi-bind-label {
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
 .control-widget {
   width: 100%;
   display: grid;
@@ -808,8 +865,17 @@ textarea {
   }
 
   .topbar-actions .btn,
-  .control-style-switch {
+  .control-style-switch,
+  .audio-toggle-stack {
     flex: 1 1 auto;
+  }
+
+  .audio-midi-row {
+    width: 100%;
+  }
+
+  .audio-midi-row .btn {
+    flex: 1;
   }
 
   .grid-channel-fields {

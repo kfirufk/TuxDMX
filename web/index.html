@@ -22,7 +22,14 @@
           <button id="control-mode-knob" class="btn ghost" data-control-mode="knob" type="button">Knobs</button>
         </div>
         <button id="refresh-btn" class="btn ghost">Refresh</button>
-        <button id="audio-toggle" class="btn accent">Music Reactive: Off</button>
+        <div class="audio-toggle-stack">
+          <button id="audio-toggle" class="btn accent">Music Reactive: Off</button>
+          <div class="audio-midi-row">
+            <button id="audio-reactive-midi-learn" class="btn ghost btn-mini" type="button">Learn MIDI</button>
+            <button id="audio-reactive-midi-clear" class="btn ghost btn-mini" type="button">Clear</button>
+          </div>
+          <p id="audio-reactive-midi-label" class="audio-midi-label">MIDI: not mapped</p>
+        </div>
       </div>
     </header>
 
@@ -67,6 +74,14 @@
         </div>
         <p id="output-universe-label">Current: U1</p>
         <p id="universe-help">Each universe is a separate 512-channel DMX space.</p>
+      </article>
+      <article>
+        <h2>MIDI Routing</h2>
+        <div class="inline-controls">
+          <select id="midi-input-select"></select>
+        </div>
+        <p id="midi-status">MIDI: checking browser support...</p>
+        <p id="midi-learn-status">Learn: idle</p>
       </article>
     </section>
 
