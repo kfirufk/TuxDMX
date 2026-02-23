@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <mutex>
@@ -66,6 +67,7 @@ class AppController {
   std::mt19937 reactiveRng_;
   std::unordered_map<int, ReactiveFixtureState> reactiveStates_;
   std::chrono::steady_clock::time_point lastReactiveApply_{};
+  std::atomic<float> reactiveVolumeThreshold_{0.12F};
 };
 
 }  // namespace tuxdmx

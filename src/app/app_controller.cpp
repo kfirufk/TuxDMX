@@ -30,6 +30,20 @@ bool getRequiredInt(const std::unordered_map<std::string, std::string>& form, co
   return true;
 }
 
+bool parseFloatStrict(std::string_view text, float& out) {
+  try {
+    std::size_t idx = 0;
+    const float value = std::stof(std::string(text), &idx);
+    if (idx != text.size()) {
+      return false;
+    }
+    out = value;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 bool parseBoolLike(const std::unordered_map<std::string, std::string>& form, const std::string& key) {
   auto it = form.find(key);
   if (it == form.end()) {
@@ -472,6 +486,7 @@ std::vector<AppController::FixtureResolvedView> AppController::resolveFixtures(s
 std::string AppController::buildStatusJson() {
   const auto dmxStatus = dmx_.status();
   const auto metrics = audio_.currentMetrics();
+  const float reactiveVolumeThreshold = std::clamp(reactiveVolumeThreshold_.load(), 0.0F, 1.0F);
   const auto inputDevices = audio_.inputDevices();
   const int defaultInputDeviceId = audio_.defaultInputDeviceId();
   const int selectedInputDeviceId = audio_.selectedInputDeviceId();
@@ -512,7 +527,8 @@ std::string AppController::buildStatusJson() {
   ss << "\"bass\":" << metrics.bass << ',';
   ss << "\"treble\":" << metrics.treble << ',';
   ss << "\"bpm\":" << metrics.bpm << ',';
-  ss << "\"beat\":" << jsonBool(metrics.beat);
+  ss << "\"beat\":" << jsonBool(metrics.beat) << ',';
+  ss << "\"reactiveVolumeThreshold\":" << reactiveVolumeThreshold;
   ss << "}}";
 
   return ss.str();
@@ -542,6 +558,7 @@ std::string AppController::buildStateJson() {
 
   const auto dmxStatus = dmx_.status();
   const auto metrics = audio_.currentMetrics();
+  const float reactiveVolumeThreshold = std::clamp(reactiveVolumeThreshold_.load(), 0.0F, 1.0F);
   const auto inputDevices = audio_.inputDevices();
   const int defaultInputDeviceId = audio_.defaultInputDeviceId();
   const int selectedInputDeviceId = audio_.selectedInputDeviceId();
@@ -586,7 +603,8 @@ std::string AppController::buildStateJson() {
   ss << "\"bass\":" << metrics.bass << ',';
   ss << "\"treble\":" << metrics.treble << ',';
   ss << "\"bpm\":" << metrics.bpm << ',';
-  ss << "\"beat\":" << jsonBool(metrics.beat);
+  ss << "\"beat\":" << jsonBool(metrics.beat) << ',';
+  ss << "\"reactiveVolumeThreshold\":" << reactiveVolumeThreshold;
   ss << '}';
 
   ss << ",\"templates\":";
@@ -682,6 +700,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
   rebuildAllUniversesFromDatabase();
 
   std::uniform_real_distribution<float> hueJitter(-4.0F, 4.0F);
+  const float gate = std::clamp(reactiveVolumeThreshold_.load(), 0.0F, 1.0F);
 
   for (const auto& resolved : fixtures) {
     const auto& fixture = resolved.fixture;
@@ -696,14 +715,17 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
     state.smoothedEnergy = state.smoothedEnergy * 0.82F + metrics.energy * 0.18F;
 
     // Ignore tiny beat spikes in near-silence so moving heads do not drift when the room is quiet.
+    const float beatGate = std::max(0.05F, gate * 0.85F);
     const bool strongBeat =
-        metrics.beat && (metrics.energy > 0.10F || metrics.bass > 0.12F || metrics.treble > 0.12F);
-    const bool nearSilence = !strongBeat && metrics.energy < 0.08F && metrics.bass < 0.10F && metrics.treble < 0.10F;
+        metrics.beat && (metrics.energy >= beatGate || metrics.bass >= beatGate || metrics.treble >= beatGate);
+    const bool nearSilence = !strongBeat && metrics.energy < gate && metrics.bass < gate && metrics.treble < gate;
     if (nearSilence) {
       state.smoothedEnergy *= 0.75F;
     }
 
-    const float activity = std::clamp((state.smoothedEnergy - 0.08F) / 0.92F, 0.0F, 1.0F);
+    const float activity = gate >= 0.99F
+                               ? 0.0F
+                               : std::clamp((state.smoothedEnergy - gate) / std::max(0.01F, 1.0F - gate), 0.0F, 1.0F);
 
     // Hue motion follows meaningful audio activity. When quiet, it barely changes.
     float hueStep = 0.06F + (activity * 2.4F);
@@ -782,7 +804,7 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         nextValue = clampDmx(static_cast<int>(std::round(speed)));
       } else if (kind == "strobe") {
         std::optional<ChannelRange> targetRange;
-        if (strongBeat || metrics.energy > 0.72F) {
+        if (strongBeat || metrics.energy > std::max(0.72F, gate + 0.40F)) {
           targetRange = pickRangeByKeywords(channel.ranges, {"strobe", "flash", "flicker"});
         } else {
           targetRange = pickRangeByKeywords(channel.ranges, {"no", "off", "manual", "static"});
@@ -807,13 +829,13 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         } else {
           // Mode selection priorities use the labels you define in each range.
           // Tweak keyword sets below to map your own fixture vocabulary.
-          if (metrics.bass > 0.75F) {
+          if (metrics.bass > std::max(0.75F, gate + 0.35F)) {
             desired = {"voice", "sound", "music"};
-          } else if (strongBeat && metrics.energy > 0.65F) {
+          } else if (strongBeat && metrics.energy > std::max(0.65F, gate + 0.28F)) {
             desired = {"jump", "flash"};
-          } else if (metrics.energy > 0.50F) {
+          } else if (metrics.energy > std::max(0.50F, gate + 0.20F)) {
             desired = {"pulse", "variable"};
-          } else if (metrics.energy > 0.30F) {
+          } else if (metrics.energy > std::max(0.30F, gate + 0.10F)) {
             desired = {"gradient", "fade"};
           } else {
             desired = {"manual", "static"};
@@ -837,11 +859,11 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
       } else if (kind == "effect_mode") {
         std::vector<std::string> desired;
 
-        if (metrics.treble > 0.68F) {
+        if (metrics.treble > std::max(0.68F, gate + 0.28F)) {
           desired = {"chromatic", "aberration", "prism"};
-        } else if (state.smoothedEnergy > 0.44F) {
+        } else if (state.smoothedEnergy > std::max(0.44F, gate + 0.16F)) {
           desired = {"gradient", "fade", "tint"};
-        } else if (state.smoothedEnergy > 0.20F) {
+        } else if (state.smoothedEnergy > std::max(0.20F, gate + 0.06F)) {
           desired = {"shift", "color"};
         } else {
           desired = {"nf", "off", "none"};
@@ -861,9 +883,9 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         std::vector<std::string> desired;
 
         // Macro logic intentionally avoids reset ranges during autoplay.
-        if (strongBeat && metrics.bass > 0.72F) {
+        if (strongBeat && metrics.bass > std::max(0.72F, gate + 0.32F)) {
           desired = {"voice", "sound", "audio"};
-        } else if (state.smoothedEnergy > 0.38F) {
+        } else if (state.smoothedEnergy > std::max(0.38F, gate + 0.14F)) {
           desired = {"random", "walk"};
         } else {
           desired = {"nf", "off", "none", "manual"};
@@ -1561,6 +1583,26 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     }
 
     return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && request.path == "/api/audio/reactive-threshold") {
+    auto form = parseFormEncoded(request.body);
+    auto thresholdIt = form.find("threshold");
+    if (thresholdIt == form.end()) {
+      return jsonError(422, "Missing field: threshold");
+    }
+
+    float threshold = 0.0F;
+    if (!parseFloatStrict(thresholdIt->second, threshold)) {
+      return jsonError(422, "Invalid float field: threshold");
+    }
+
+    threshold = std::clamp(threshold, 0.0F, 1.0F);
+    reactiveVolumeThreshold_.store(threshold);
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,\"reactiveVolumeThreshold\":" << threshold << '}';
+    return jsonOk(ss.str());
   }
 
   if (request.method == "POST" && request.path == "/api/audio/input-device") {

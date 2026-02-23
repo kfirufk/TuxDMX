@@ -59,6 +59,7 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
   - real microphone analysis via PortAudio when available
   - adaptive energy + bass/treble + beat + BPM estimation
   - fallback simulated analyzer when PortAudio is unavailable
+  - adjustable minimum energy threshold (ignore low background noise)
   - reactive playback maps to channel kinds and labeled ranges with documented formulas in code
   - quiet-room movement guard for pan/tilt fixtures to prevent random drift in near-silence
 
@@ -138,6 +139,7 @@ ctest --preset test-debug
 - `POST /api/dmx/patches` apply temporary direct DMX patches (`universe:address:value,...`)
 - `POST /api/dmx/blackout` panic blackout (set known universes and fixture channels to zero, reactive off)
 - `POST /api/audio/reactive` toggle music-reactive mode
+- `POST /api/audio/reactive-threshold` set minimum reactive energy threshold (`threshold` in range `0..1`)
 - `POST /api/audio/input-device` select active audio input device (`-1` = default)
 - `POST /api/groups` create group
 - `POST /api/groups/{id}/fixtures` set group members
