@@ -164,7 +164,7 @@ Optional flags:
 
 ### Windows (MSVC)
 
-Run these commands from **Developer PowerShell for Visual Studio** (installed with the `Desktop development with C++` workload):
+Run these commands from **x64 Native Tools Command Prompt for VS** (or a PowerShell started from it):
 
 ```powershell
 cmake -S . -B build\debug -G "Ninja" -DCMAKE_BUILD_TYPE=Debug
@@ -176,7 +176,7 @@ Open `http://<server-ip>:8080` from phone/desktop browser.
 
 ### Windows One-Command Run Script
 
-Open **Developer PowerShell for Visual Studio**, then run:
+Open **x64 Native Tools Command Prompt for VS**, run `powershell`, then run:
 
 ```bat
 .\scripts\run_tuxdmx_windows.cmd
@@ -185,6 +185,9 @@ Open **Developer PowerShell for Visual Studio**, then run:
 The launcher will:
 - run the PowerShell launcher with per-process execution policy bypass (no permanent policy change)
 - verify required tools are available (`cmake`, `ninja` for ninja presets, and a C++ compiler)
+- verify you are using x64 MSVC environment (`Hostx64\x64`)
+- auto-detect `vcpkg` and set `VCPKG_ROOT` / `CMAKE_TOOLCHAIN_FILE` when possible
+- verify `sqlite3` is installed for the active vcpkg triplet
 - print install/download guidance if something is missing
 - configure + build with CMake presets
 - start the server and wait for `/api/state`
@@ -209,7 +212,7 @@ If direct `.ps1` execution is blocked, run once in that shell:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-If configure fails with `Could NOT find SQLite3`, install SQLite dev files with vcpkg and set toolchain:
+If the launcher reports missing vcpkg/sqlite3, run:
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg C:\vcpkg

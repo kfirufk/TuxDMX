@@ -15,17 +15,24 @@ Optional:
 
 ## Quick Start
 
-Use **Developer PowerShell for Visual Studio** (from Start menu), then run:
+Use this exact flow:
+
+1. Open **x64 Native Tools Command Prompt for VS** (Start menu).
+2. Run `powershell`.
+3. Run:
 
 ```bat
 .\scripts\run_tuxdmx_windows.cmd
 ```
 
-`Developer PowerShell for Visual Studio` is installed automatically when you install the C++ workload.
+This guarantees `cl.exe` is the x64 toolchain (`Hostx64\x64`), which is required by the launcher.
 
 The launcher:
 - starts the PowerShell script with per-process execution policy bypass (no permanent policy change)
 - checks required tools and versions
+- validates you are in an x64 VS compiler environment
+- auto-detects `vcpkg` (`C:\vcpkg` or `vcpkg.exe` on PATH) and sets `VCPKG_ROOT`/`CMAKE_TOOLCHAIN_FILE` when possible
+- checks that `sqlite3` is installed for the active vcpkg triplet
 - prints install guidance for missing dependencies
 - configures/builds with CMake presets
 - starts server and waits for `/api/state`
@@ -78,7 +85,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ## Common Configure Failure: SQLite3 Not Found
 
-If CMake fails with `FindPackageHandleStandardArgs.cmake` and `Could NOT find SQLite3`, install SQLite3 dev files via vcpkg:
+If vcpkg/sqlite3 is missing:
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg C:\vcpkg
@@ -87,4 +94,4 @@ C:\vcpkg\vcpkg.exe install sqlite3:x64-windows
 setx CMAKE_TOOLCHAIN_FILE C:\vcpkg\scripts\buildsystems\vcpkg.cmake
 ```
 
-Then close all terminals, open a new Developer PowerShell, and run the launcher again.
+Then close all terminals, open **x64 Native Tools Command Prompt for VS**, run `powershell`, and run the launcher again.

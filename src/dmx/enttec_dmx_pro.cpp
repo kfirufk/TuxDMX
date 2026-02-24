@@ -11,8 +11,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <setupapi.h>
 #include <windows.h>
+#include <setupapi.h>
 #include <winreg.h>
 #else
 #include <cerrno>

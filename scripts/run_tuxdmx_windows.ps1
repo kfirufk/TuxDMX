@@ -29,6 +29,14 @@ function Command-Exists {
   return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Normalize-PathForCMake {
+  param([string]$PathValue)
+  if ([string]::IsNullOrWhiteSpace($PathValue)) {
+    return ""
+  }
+  return ($PathValue -replace "\\", "/")
+}
+
 function Invoke-NativeLogged {
   param(
     [Parameter(Mandatory = $true)][string]$Command,
@@ -140,6 +148,7 @@ if ([string]::IsNullOrWhiteSpace($LogFile)) {
 }
 
 $missing = New-Object System.Collections.Generic.List[string]
+$warnings = New-Object System.Collections.Generic.List[string]
 
 if (-not (Command-Exists "cmake")) {
   $missing.Add("CMake 3.28+ (install: winget install Kitware.CMake)")
@@ -163,6 +172,61 @@ if (-not $hasCompiler) {
   $missing.Add("C++ compiler (install VS Community/Build Tools with Desktop development with C++)")
 }
 
+if (Command-Exists "cl.exe") {
+  $clCommand = Get-Command "cl.exe" -ErrorAction SilentlyContinue
+  $clPath = ""
+  if ($clCommand -and $clCommand.Source) {
+    $clPath = $clCommand.Source
+  }
+  if ($clPath -and ($clPath -notmatch "Hostx64[\\/]+x64")) {
+    $missing.Add("x64 MSVC shell (open 'x64 Native Tools Command Prompt for VS', run 'powershell', then this script)")
+  }
+}
+
+# Try to infer vcpkg root and toolchain automatically.
+$vcpkgRoot = $env:VCPKG_ROOT
+if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
+  if (Test-Path "C:\vcpkg\vcpkg.exe") {
+    $vcpkgRoot = "C:\vcpkg"
+  } elseif (Command-Exists "vcpkg.exe") {
+    $vcpkgCmd = Get-Command "vcpkg.exe" -ErrorAction SilentlyContinue
+    if ($vcpkgCmd -and $vcpkgCmd.Source) {
+      $vcpkgRoot = Split-Path -Parent $vcpkgCmd.Source
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($vcpkgRoot)) {
+    $env:VCPKG_ROOT = $vcpkgRoot
+    $warnings.Add("Auto-detected VCPKG_ROOT=$vcpkgRoot")
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($env:VCPKG_TARGET_TRIPLET)) {
+  $env:VCPKG_TARGET_TRIPLET = "x64-windows"
+}
+
+if ([string]::IsNullOrWhiteSpace($env:CMAKE_TOOLCHAIN_FILE) -and -not [string]::IsNullOrWhiteSpace($vcpkgRoot)) {
+  $candidateToolchain = Join-Path $vcpkgRoot "scripts\buildsystems\vcpkg.cmake"
+  if (Test-Path $candidateToolchain) {
+    $env:CMAKE_TOOLCHAIN_FILE = $candidateToolchain
+    $warnings.Add("Auto-detected CMAKE_TOOLCHAIN_FILE=$candidateToolchain")
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($vcpkgRoot) -or -not (Test-Path (Join-Path $vcpkgRoot "vcpkg.exe"))) {
+  $missing.Add("vcpkg (install at C:\\vcpkg or set VCPKG_ROOT to your vcpkg folder)")
+} else {
+  $triplet = $env:VCPKG_TARGET_TRIPLET
+  $sqliteHeader = Join-Path $vcpkgRoot "installed\$triplet\include\sqlite3.h"
+  $sqliteLib = Join-Path $vcpkgRoot "installed\$triplet\lib\sqlite3.lib"
+  if (-not (Test-Path $sqliteHeader) -or -not (Test-Path $sqliteLib)) {
+    $missing.Add("sqlite3 for $triplet (run: $vcpkgRoot\\vcpkg.exe install sqlite3:$triplet)")
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($env:CMAKE_TOOLCHAIN_FILE) -or -not (Test-Path $env:CMAKE_TOOLCHAIN_FILE)) {
+  $missing.Add("CMAKE_TOOLCHAIN_FILE set to vcpkg toolchain (e.g. C:\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake)")
+}
+
 if ($missing.Count -gt 0) {
   Write-Host ""
   Write-Host "Missing required tools:" -ForegroundColor Red
@@ -172,9 +236,17 @@ if ($missing.Count -gt 0) {
   Write-Host ""
   Write-Host "Important: PATH changes from installers are not visible in this already-open terminal." -ForegroundColor Yellow
   Write-Host "If you just installed CMake/Ninja/Build Tools, close this PowerShell window and open a new one." -ForegroundColor Yellow
-  Write-Host "Use 'Developer PowerShell for Visual Studio' (installed automatically with the C++ workload)." -ForegroundColor Yellow
+  Write-Host "Use 'x64 Native Tools Command Prompt for VS', then run 'powershell', then this launcher." -ForegroundColor Yellow
+  Write-Host "If vcpkg/sqlite3 is missing, run:" -ForegroundColor Yellow
+  Write-Host "  git clone https://github.com/microsoft/vcpkg C:\vcpkg" -ForegroundColor Yellow
+  Write-Host "  C:\vcpkg\bootstrap-vcpkg.bat" -ForegroundColor Yellow
+  Write-Host "  C:\vcpkg\vcpkg.exe install sqlite3:x64-windows" -ForegroundColor Yellow
   Write-Host "Then run this script again." -ForegroundColor Yellow
   exit 1
+}
+
+foreach ($w in $warnings) {
+  Write-Host "[info] $w" -ForegroundColor DarkYellow
 }
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DbPath) | Out-Null
@@ -189,7 +261,7 @@ try {
   Write-Step "Configuring ($ConfigurePreset)"
   $configureArgs = @("--preset", $ConfigurePreset)
   if (-not [string]::IsNullOrWhiteSpace($env:CMAKE_TOOLCHAIN_FILE)) {
-    $toolchainPath = $env:CMAKE_TOOLCHAIN_FILE -replace "\\", "/"
+    $toolchainPath = Normalize-PathForCMake -PathValue $env:CMAKE_TOOLCHAIN_FILE
     $configureArgs += "-DCMAKE_TOOLCHAIN_FILE=$toolchainPath"
   }
   if (-not [string]::IsNullOrWhiteSpace($env:VCPKG_TARGET_TRIPLET)) {
