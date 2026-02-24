@@ -49,6 +49,7 @@ bool readBytesWithTimeout(int fd, std::uint8_t* dst, std::size_t size, int timeo
   while (offset < size) {
     const auto now = std::chrono::steady_clock::now();
     if (now >= deadline) {
+      errno = ETIMEDOUT;
       return false;
     }
 
@@ -79,6 +80,7 @@ bool readBytesWithTimeout(int fd, std::uint8_t* dst, std::size_t size, int timeo
     }
 
     if (rc == 0) {
+      errno = ETIMEDOUT;
       return false;
     }
 
@@ -403,6 +405,133 @@ int nativeErrorCode() {
 #endif
 }
 
+#ifndef _WIN32
+struct PosixSerialErrorDiagnosis {
+  std::string kind;
+  std::string hint;
+  bool likelyUsbPower = false;
+};
+
+std::string errnoText(int code) {
+  if (code <= 0) {
+    return {};
+  }
+  const char* text = std::strerror(code);
+  return text == nullptr ? std::string{} : std::string(text);
+}
+
+bool serialEndpointExists(std::string_view endpoint) {
+  const std::string path = trim(endpoint);
+  if (path.empty()) {
+    return false;
+  }
+  std::error_code ec;
+  return std::filesystem::exists(path, ec) && !ec;
+}
+
+PosixSerialErrorDiagnosis diagnosePosixSerialError(std::string_view stage, int code, std::string_view endpoint) {
+  PosixSerialErrorDiagnosis diagnosis;
+  diagnosis.kind = "unknown";
+
+  switch (code) {
+    case ETIMEDOUT:
+      diagnosis.kind = "timeout";
+      diagnosis.hint = "No response from the DMX interface before timeout.";
+      break;
+    case ENOENT:
+    case ENXIO:
+    case ENODEV:
+      diagnosis.kind = "disconnected";
+      diagnosis.hint = "Serial endpoint is not available; device may be unplugged or reset.";
+      break;
+    case EPIPE:
+      diagnosis.kind = "disconnected";
+      diagnosis.hint = "Broken serial pipe; device likely disconnected.";
+      break;
+    case EIO:
+      diagnosis.kind = "io";
+      diagnosis.hint = "Low-level USB I/O error. On macOS this can indicate cable/hub power instability.";
+      diagnosis.likelyUsbPower = true;
+      break;
+    case EBUSY:
+      diagnosis.kind = "busy";
+      diagnosis.hint = "Serial endpoint is busy (another app may be using it).";
+      break;
+    case EACCES:
+    case EPERM:
+      diagnosis.kind = "permission";
+      diagnosis.hint = "Permission denied while accessing serial endpoint.";
+      break;
+    default:
+      break;
+  }
+
+  if (!trim(endpoint).empty() && !serialEndpointExists(endpoint)) {
+    diagnosis.kind = "endpoint_missing";
+    diagnosis.hint = "Serial endpoint disappeared from /dev; likely unplugged or USB hub power drop/reset.";
+    diagnosis.likelyUsbPower = true;
+  } else if (diagnosis.kind == "unknown" && stage == "probe") {
+    diagnosis.hint = "Probe failed; verify cable, FTDI driver, and USB connection stability.";
+  }
+
+  return diagnosis;
+}
+#endif
+
+std::string formatNativeErrorMessage(std::string_view base, int code, std::string_view stage, std::string_view endpoint,
+                                     std::string* kind = nullptr, std::string* hint = nullptr,
+                                     bool* likelyUsbPower = nullptr) {
+  std::string message = trim(base);
+#ifdef _WIN32
+  if (code != 0) {
+    if (!message.empty()) {
+      message += ' ';
+    }
+    message += "(code " + std::to_string(code) + ")";
+  }
+  if (kind != nullptr) {
+    kind->clear();
+  }
+  if (hint != nullptr) {
+    hint->clear();
+  }
+  if (likelyUsbPower != nullptr) {
+    *likelyUsbPower = false;
+  }
+#else
+  const auto diagnosis = diagnosePosixSerialError(stage, code, endpoint);
+  if (kind != nullptr) {
+    *kind = diagnosis.kind;
+  }
+  if (hint != nullptr) {
+    *hint = diagnosis.hint;
+  }
+  if (likelyUsbPower != nullptr) {
+    *likelyUsbPower = diagnosis.likelyUsbPower;
+  }
+
+  if (code != 0) {
+    const std::string codeText = errnoText(code);
+    if (!message.empty()) {
+      message += ' ';
+    }
+    message += "(errno " + std::to_string(code);
+    if (!codeText.empty()) {
+      message += ": " + codeText;
+    }
+    message += ")";
+  }
+
+  if (!diagnosis.hint.empty()) {
+    if (!message.empty()) {
+      message += ". ";
+    }
+    message += diagnosis.hint;
+  }
+#endif
+  return message;
+}
+
 }  // namespace
 
 EnttecDmxPro::EnttecDmxPro() {
@@ -419,17 +548,35 @@ EnttecDmxPro::~EnttecDmxPro() { disconnect(); }
 
 std::string EnttecDmxPro::backendName() const { return "enttec-usb-pro"; }
 
-void EnttecDmxPro::setLastErrorUnlocked(std::string stage, std::string message, int code, std::string endpoint) {
+void EnttecDmxPro::setLastErrorUnlocked(std::string stage, std::string message, int code, std::string endpoint,
+                                        std::string kind, std::string hint, bool likelyUsbPower) {
   status_.lastErrorStage = std::move(stage);
   status_.lastError = std::move(message);
   status_.lastErrorCode = code;
   status_.lastErrorEndpoint = std::move(endpoint);
+  status_.lastErrorKind = std::move(kind);
+  status_.lastErrorHint = std::move(hint);
+  status_.lastErrorLikelyUsbPower = likelyUsbPower;
+#ifndef _WIN32
+  const auto diagnosis =
+      diagnosePosixSerialError(status_.lastErrorStage, status_.lastErrorCode, status_.lastErrorEndpoint);
+  if (status_.lastErrorKind.empty()) {
+    status_.lastErrorKind = diagnosis.kind;
+  }
+  if (status_.lastErrorHint.empty()) {
+    status_.lastErrorHint = diagnosis.hint;
+  }
+  status_.lastErrorLikelyUsbPower = status_.lastErrorLikelyUsbPower || diagnosis.likelyUsbPower;
+#endif
   status_.lastErrorUnixMs = nowUnixMs();
 }
 
 void EnttecDmxPro::clearLastErrorUnlocked() {
   status_.lastError.clear();
   status_.lastErrorStage.clear();
+  status_.lastErrorKind.clear();
+  status_.lastErrorHint.clear();
+  status_.lastErrorLikelyUsbPower = false;
   status_.lastErrorCode = 0;
   status_.lastErrorEndpoint.clear();
   status_.lastErrorUnixMs = 0;
@@ -681,6 +828,7 @@ bool EnttecDmxPro::readFrame(std::uint8_t expectedLabel, std::vector<std::uint8_
   }
 
   if (start != kStartByte) {
+    errno = ETIMEDOUT;
     return false;
   }
 
@@ -721,14 +869,14 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
     auto& api = ftdiApi();
     if (!api.ensureLoaded()) {
       errorCode = ERROR_MOD_NOT_FOUND;
-      error = "ftd2xx.dll not available";
+      error = formatNativeErrorMessage("ftd2xx.dll not available", errorCode, "probe", port);
       return false;
     }
 
     const std::string serialKey = ftdiEndpointSerial(port);
     if (serialKey.empty()) {
       errorCode = ERROR_INVALID_PARAMETER;
-      error = "Invalid FTDI endpoint";
+      error = formatNativeErrorMessage("Invalid FTDI endpoint", errorCode, "probe", port);
       return false;
     }
 
@@ -737,7 +885,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
     const FtStatus openRc = api.openEx(const_cast<char*>(serialArg.c_str()), kFtOpenBySerialNumber, &ftHandle);
     if (openRc != kFtOk || ftHandle == nullptr) {
       errorCode = static_cast<int>(openRc);
-      error = "FTDI open failed";
+      error = formatNativeErrorMessage("FTDI open failed", errorCode, "probe", port);
       return false;
     }
 
@@ -765,7 +913,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   HANDLE handle = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
   if (handle == INVALID_HANDLE_VALUE) {
     errorCode = static_cast<int>(GetLastError());
-    error = "Port open failed";
+    error = formatNativeErrorMessage("Port open failed", errorCode, "probe", port);
     return false;
   }
 
@@ -774,7 +922,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   if (!GetCommState(handle, &dcb)) {
     errorCode = static_cast<int>(GetLastError());
     CloseHandle(handle);
-    error = "Failed to read serial settings";
+    error = formatNativeErrorMessage("Failed to read serial settings", errorCode, "probe", port);
     return false;
   }
 
@@ -785,7 +933,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   if (!SetCommState(handle, &dcb)) {
     errorCode = static_cast<int>(GetLastError());
     CloseHandle(handle);
-    error = "Failed to apply serial settings";
+    error = formatNativeErrorMessage("Failed to apply serial settings", errorCode, "probe", port);
     return false;
   }
 
@@ -817,21 +965,21 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   const int fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
   if (fd < 0) {
     errorCode = errno;
-    error = "Port open failed";
+    error = formatNativeErrorMessage("Port open failed", errorCode, "probe", port);
     return false;
   }
 
   if (!configureSerialPort(fd)) {
     errorCode = errno;
     close(fd);
-    error = "Failed to configure serial port";
+    error = formatNativeErrorMessage("Failed to configure serial port", errorCode, "probe", port);
     return false;
   }
 
   if (fcntl(fd, F_SETFL, 0) != 0) {
     errorCode = errno;
     close(fd);
-    error = "Failed to set serial blocking mode";
+    error = formatNativeErrorMessage("Failed to set serial blocking mode", errorCode, "probe", port);
     return false;
   }
 
@@ -847,7 +995,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   const std::array<std::uint8_t, 5> serialReq = {kStartByte, kLabelGetSerial, 0x00, 0x00, kEndByte};
   if (!writeBytes(serialReq.data(), serialReq.size())) {
     errorCode = nativeErrorCode();
-    error = "Failed to write serial request";
+    error = formatNativeErrorMessage("Failed to write serial request", errorCode, "probe", port);
     disconnect();
     return false;
   }
@@ -855,7 +1003,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   std::vector<std::uint8_t> serialPayload;
   if (!readFrame(kLabelGetSerial, serialPayload, probeTimeoutMs)) {
     errorCode = nativeErrorCode();
-    error = "No valid serial response";
+    error = formatNativeErrorMessage("No valid serial response", errorCode, "probe", port);
     disconnect();
     return false;
   }
@@ -902,7 +1050,11 @@ void EnttecDmxPro::refreshDevicesUnlocked(std::string& error) {
 #ifdef _WIN32
     error = "No candidate serial ports found (check FTDI/USB driver exposes a COM port)";
 #else
+#if defined(__APPLE__)
+    error = "No candidate serial ports found. Check cable/hub power and that /dev/cu.usbserial* is present.";
+#else
     error = "No candidate serial ports found";
+#endif
 #endif
     return;
   }
@@ -928,9 +1080,9 @@ void EnttecDmxPro::refreshDevicesUnlocked(std::string& error) {
       continue;
     }
 
-    logMessage(LogLevel::Warn, "dmx",
-               "Probe failed on " + port + ": " + (probeError.empty() ? std::string("unknown") : probeError)
-                   + (probeCode != 0 ? " (code " + std::to_string(probeCode) + ")" : ""));
+    const std::string resolvedProbeError =
+        probeError.empty() ? formatNativeErrorMessage("Probe failed", probeCode, "probe", port) : probeError;
+    logMessage(LogLevel::Warn, "dmx", "Probe failed on " + port + ": " + resolvedProbeError);
 
     if (firstProbeError.empty() && !probeError.empty()) {
       firstProbeError = probeError;
@@ -1127,18 +1279,26 @@ bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
   if (!writeBytes(frame.data(), frame.size())) {
     ++consecutiveWriteFailures_;
     const int errorCode = nativeErrorCode();
+    std::string errorKind;
+    std::string errorHint;
+    bool likelyUsbPower = false;
+    const std::string errorDetail =
+        formatNativeErrorMessage("DMX write failure", errorCode, "write", status_.endpoint, &errorKind, &errorHint,
+                                 &likelyUsbPower);
 
     if (consecutiveWriteFailures_ < writeRetryLimit_) {
       const std::string error = "DMX write failed (" + std::to_string(consecutiveWriteFailures_) + "/"
-                                + std::to_string(writeRetryLimit_) + "), retrying";
-      setLastErrorUnlocked("write", error, errorCode, status_.endpoint);
+                                + std::to_string(writeRetryLimit_) + "), retrying. " + errorDetail;
+      setLastErrorUnlocked("write", error, errorCode, status_.endpoint, errorKind, errorHint, likelyUsbPower);
       logMessage(LogLevel::Warn, "dmx", error);
       status_.transportState = "degraded";
       return false;
     }
 
-    const std::string error = "DMX write failed repeatedly (" + std::to_string(consecutiveWriteFailures_) + " tries), reconnecting";
-    setLastErrorUnlocked("write", error, errorCode, status_.endpoint);
+    const std::string error =
+        "DMX write failed repeatedly (" + std::to_string(consecutiveWriteFailures_) + " tries), reconnecting. "
+        + errorDetail;
+    setLastErrorUnlocked("write", error, errorCode, status_.endpoint, errorKind, errorHint, likelyUsbPower);
     logMessage(LogLevel::Error, "dmx", error);
 
     status_.connected = false;

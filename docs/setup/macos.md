@@ -32,6 +32,30 @@ If more than one compatible DMX interface is connected:
 
 The preferred device selection is persisted in SQLite and restored on next startup.
 
+## USB Stability Monitoring (macOS)
+
+When disconnects happen, check the `Connection` card and transport line in the UI:
+- `lastErrorKind` and `lastErrorHint` are now reported
+- `possible usb power/hub issue` is flagged for likely brownout/reset patterns
+
+You can also watch runtime logs:
+
+```bash
+tail -f ./data/tuxdmx.log
+```
+
+Useful quick checks while reproducing:
+
+```bash
+ls /dev/cu.usbserial* /dev/tty.usbserial* 2>/dev/null
+```
+
+```bash
+ioreg -p IOUSB -l | rg -i "enttec|ftdi|usb"
+```
+
+If `/dev/cu.usbserial*` disappears and reappears during drops, that is usually a USB path reset (cable/hub/power), not an app-level DMX logic issue.
+
 ## Launcher Options
 
 ```text

@@ -853,6 +853,9 @@ std::string AppController::buildStatusJson() {
   ss << "\"firmwareMinor\":" << dmxStatus.firmwareMinor << ',';
   ss << "\"lastError\":\"" << jsonEscape(dmxStatus.lastError) << "\",";
   ss << "\"lastErrorStage\":\"" << jsonEscape(dmxStatus.lastErrorStage) << "\",";
+  ss << "\"lastErrorKind\":\"" << jsonEscape(dmxStatus.lastErrorKind) << "\",";
+  ss << "\"lastErrorHint\":\"" << jsonEscape(dmxStatus.lastErrorHint) << "\",";
+  ss << "\"lastErrorLikelyUsbPower\":" << jsonBool(dmxStatus.lastErrorLikelyUsbPower) << ',';
   ss << "\"lastErrorCode\":" << dmxStatus.lastErrorCode << ',';
   ss << "\"lastErrorEndpoint\":\"" << jsonEscape(dmxStatus.lastErrorEndpoint) << "\",";
   ss << "\"lastErrorUnixMs\":" << dmxStatus.lastErrorUnixMs << ',';
@@ -985,6 +988,9 @@ std::string AppController::buildStateJson() {
   ss << "\"firmwareMinor\":" << dmxStatus.firmwareMinor << ',';
   ss << "\"lastError\":\"" << jsonEscape(dmxStatus.lastError) << "\",";
   ss << "\"lastErrorStage\":\"" << jsonEscape(dmxStatus.lastErrorStage) << "\",";
+  ss << "\"lastErrorKind\":\"" << jsonEscape(dmxStatus.lastErrorKind) << "\",";
+  ss << "\"lastErrorHint\":\"" << jsonEscape(dmxStatus.lastErrorHint) << "\",";
+  ss << "\"lastErrorLikelyUsbPower\":" << jsonBool(dmxStatus.lastErrorLikelyUsbPower) << ',';
   ss << "\"lastErrorCode\":" << dmxStatus.lastErrorCode << ',';
   ss << "\"lastErrorEndpoint\":\"" << jsonEscape(dmxStatus.lastErrorEndpoint) << "\",";
   ss << "\"lastErrorUnixMs\":" << dmxStatus.lastErrorUnixMs << ',';

@@ -80,6 +80,9 @@ struct DmxDeviceStatus {
   int firmwareMinor = 0;
   std::string lastError;
   std::string lastErrorStage;
+  std::string lastErrorKind;
+  std::string lastErrorHint;
+  bool lastErrorLikelyUsbPower = false;
   int lastErrorCode = 0;
   std::string lastErrorEndpoint;
   std::int64_t lastErrorUnixMs = 0;

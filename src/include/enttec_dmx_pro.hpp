@@ -42,7 +42,8 @@ class EnttecDmxPro final : public DmxOutputBackend {
   bool probePort(const std::string& port, std::string& serial, int& fwMajor, int& fwMinor, int& errorCode,
                  std::string& error);
   void refreshDevicesUnlocked(std::string& error);
-  void setLastErrorUnlocked(std::string stage, std::string message, int code = 0, std::string endpoint = {});
+  void setLastErrorUnlocked(std::string stage, std::string message, int code = 0, std::string endpoint = {},
+                            std::string kind = {}, std::string hint = {}, bool likelyUsbPower = false);
   void clearLastErrorUnlocked();
   static std::string deviceIdFor(std::string_view port, std::string_view serial);
   static bool deviceIdMatches(const DmxOutputDevice& device, std::string_view preferredId);

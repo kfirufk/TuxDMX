@@ -123,6 +123,7 @@ Standard response envelope:
 - `dmx.activeDeviceId`
 - `dmx.preferredDeviceId`
 - `dmx.selectionMode` (`auto` or `manual`)
+- transport diagnostics: `dmx.lastErrorKind`, `dmx.lastErrorHint`, `dmx.lastErrorLikelyUsbPower`
 
 ### Audio Reactive
 

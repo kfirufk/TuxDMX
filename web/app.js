@@ -1490,6 +1490,8 @@ function renderStatus(dmx, audio, midi = null) {
   const activeDeviceId = String(dmx.activeDeviceId || '');
 
   const transportState = String(dmx.transportState || (dmx.connected ? 'connected' : 'disconnected'));
+  const lastErrorMessage = String(dmx.lastError || '').trim();
+  const lastErrorHintText = String(dmx.lastErrorHint || '').trim();
   if (dmx.connected) {
     const connectedText = dmx.serial
       ? `${dmxBackend} connected (${dmx.serial}) • ${transportState}`
@@ -1497,7 +1499,8 @@ function renderStatus(dmx, audio, midi = null) {
     els.deviceStatus.textContent = connectedText;
     els.deviceStatus.style.color = '#0b7266';
   } else {
-    els.deviceStatus.textContent = `Device not connected (${transportState}). ${dmx.lastError || ''}`.trim();
+    const disconnectDetails = [lastErrorMessage, lastErrorHintText].filter(Boolean).join(' ');
+    els.deviceStatus.textContent = `Device not connected (${transportState}). ${disconnectDetails}`.trim();
     els.deviceStatus.style.color = '#b7432b';
   }
 
@@ -1597,15 +1600,19 @@ function renderStatus(dmx, audio, midi = null) {
     const lastConnect = formatUnixMs(dmx.lastConnectAttemptUnixMs);
     const lastFrame = formatUnixMs(dmx.lastSuccessfulFrameUnixMs);
     const lastErrorStage = String(dmx.lastErrorStage || '').trim();
+    const lastErrorKind = String(dmx.lastErrorKind || '').trim();
+    const lastErrorHint = String(dmx.lastErrorHint || '').trim();
+    const likelyUsbPower = Boolean(dmx.lastErrorLikelyUsbPower);
     const lastErrorCode = Number(dmx.lastErrorCode || 0);
     const lastErrorEndpoint = String(dmx.lastErrorEndpoint || '').trim();
     const errorMeta = [];
     if (lastErrorStage) errorMeta.push(lastErrorStage);
+    if (lastErrorKind) errorMeta.push(lastErrorKind);
     if (lastErrorEndpoint) errorMeta.push(lastErrorEndpoint);
     if (lastErrorCode > 0) errorMeta.push(`code ${lastErrorCode}`);
-    const lastErrorMessage = String(dmx.lastError || '').trim();
-    const errorSuffix = errorMeta.length || lastErrorMessage
-      ? ` • Last error: ${[...errorMeta, lastErrorMessage].filter(Boolean).join(' @ ')}`
+    if (likelyUsbPower) errorMeta.push('possible usb power/hub issue');
+    const errorSuffix = errorMeta.length || lastErrorMessage || lastErrorHint
+      ? ` • Last error: ${[...errorMeta, lastErrorMessage, lastErrorHint].filter(Boolean).join(' @ ')}`
       : '';
     els.dmxTransportStatus.textContent =
       `Transport: ${transportState} • Last connect: ${lastConnect} • Last frame: ${lastFrame}${errorSuffix}`;
