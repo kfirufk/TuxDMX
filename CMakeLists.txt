@@ -9,14 +9,62 @@ option(TUXDMX_ENABLE_TESTS "Build tuxdmx tests" ON)
 option(TUXDMX_ENABLE_PORTAUDIO "Enable real microphone input via PortAudio" ON)
 option(TUXDMX_ENABLE_RTMIDI "Enable server-side MIDI input via RtMidi" ON)
 
-find_package(SQLite3 QUIET)
 set(TUXDMX_SQLITE_TARGET "")
-if(SQLite3_FOUND)
+
+# 1) Try standard CMake module first.
+find_package(SQLite3 QUIET)
+if(SQLite3_FOUND AND TARGET SQLite::SQLite3)
   set(TUXDMX_SQLITE_TARGET SQLite::SQLite3)
-else()
-  # vcpkg on Windows commonly exposes sqlite as unofficial-sqlite3.
-  find_package(unofficial-sqlite3 CONFIG REQUIRED)
-  set(TUXDMX_SQLITE_TARGET unofficial::sqlite3::sqlite3)
+endif()
+
+# 2) Try vcpkg config target name.
+if(NOT TUXDMX_SQLITE_TARGET)
+  find_package(unofficial-sqlite3 CONFIG QUIET)
+  if(TARGET unofficial::sqlite3::sqlite3)
+    set(TUXDMX_SQLITE_TARGET unofficial::sqlite3::sqlite3)
+  endif()
+endif()
+
+# 3) Fallback: resolve sqlite3 manually from vcpkg install tree.
+if(NOT TUXDMX_SQLITE_TARGET)
+  set(_vcpkg_root "$ENV{VCPKG_ROOT}")
+  if(NOT _vcpkg_root AND DEFINED CMAKE_TOOLCHAIN_FILE)
+    # Typical toolchain path: <vcpkg>/scripts/buildsystems/vcpkg.cmake
+    get_filename_component(_tc_dir "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+    get_filename_component(_scripts_dir "${_tc_dir}" DIRECTORY)
+    get_filename_component(_vcpkg_root "${_scripts_dir}" DIRECTORY)
+  endif()
+
+  set(_triplet "")
+  if(DEFINED VCPKG_TARGET_TRIPLET AND VCPKG_TARGET_TRIPLET)
+    set(_triplet "${VCPKG_TARGET_TRIPLET}")
+  elseif(DEFINED ENV{VCPKG_DEFAULT_TRIPLET} AND NOT "$ENV{VCPKG_DEFAULT_TRIPLET}" STREQUAL "")
+    set(_triplet "$ENV{VCPKG_DEFAULT_TRIPLET}")
+  elseif(WIN32)
+    set(_triplet "x64-windows")
+  endif()
+
+  if(_vcpkg_root AND _triplet)
+    find_path(SQLITE3_INCLUDE_DIR_FALLBACK
+      NAMES sqlite3.h
+      PATHS "${_vcpkg_root}/installed/${_triplet}/include"
+      NO_DEFAULT_PATH)
+    find_library(SQLITE3_LIBRARY_FALLBACK
+      NAMES sqlite3 sqlite3.lib
+      PATHS "${_vcpkg_root}/installed/${_triplet}/lib"
+      NO_DEFAULT_PATH)
+    if(SQLITE3_INCLUDE_DIR_FALLBACK AND SQLITE3_LIBRARY_FALLBACK)
+      add_library(SQLite3Fallback UNKNOWN IMPORTED)
+      set_target_properties(SQLite3Fallback PROPERTIES
+        IMPORTED_LOCATION "${SQLITE3_LIBRARY_FALLBACK}"
+        INTERFACE_INCLUDE_DIRECTORIES "${SQLITE3_INCLUDE_DIR_FALLBACK}")
+      set(TUXDMX_SQLITE_TARGET SQLite3Fallback)
+    endif()
+  endif()
+endif()
+
+if(NOT TUXDMX_SQLITE_TARGET)
+  message(FATAL_ERROR "SQLite3 not found. Install sqlite3 via vcpkg and set CMAKE_TOOLCHAIN_FILE to vcpkg.cmake.")
 endif()
 find_package(Threads REQUIRED)
 find_package(PkgConfig QUIET)
