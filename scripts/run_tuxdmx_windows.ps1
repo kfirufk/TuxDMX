@@ -14,6 +14,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# In PowerShell 7+, keep native stderr as output so we can show full CMake diagnostics.
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 function Write-Step {
   param([string]$Message)
@@ -34,7 +38,10 @@ function Join-Lines {
 }
 
 function Show-ConfigureHints {
-  param([object[]]$Lines)
+  param(
+    [object[]]$Lines,
+    [string]$BuildDir = ""
+  )
 
   $blob = Join-Lines -Lines $Lines
   if (-not $blob) {
@@ -44,22 +51,41 @@ function Show-ConfigureHints {
   Write-Host ""
   Write-Host "Common fixes for configure failures:" -ForegroundColor Yellow
 
-  if ($blob -match "Could NOT find SQLite3|Could not find SQLite3|SQLite3_FOUND") {
+  if ($blob -match "Could NOT find SQLite3|Could not find SQLite3|SQLite3_FOUND|SQLite3_LIBRARY|SQLite3_INCLUDE_DIR") {
     Write-Host "- SQLite3 development files are missing." -ForegroundColor Yellow
-    Write-Host "  Download/install one of:" -ForegroundColor Yellow
-    Write-Host "    - vcpkg + sqlite3 package: https://github.com/microsoft/vcpkg" -ForegroundColor Yellow
-    Write-Host "    - SQLite prebuilt development package for Windows." -ForegroundColor Yellow
+    Write-Host "  Recommended on Windows (vcpkg):" -ForegroundColor Yellow
+    Write-Host "    1) git clone https://github.com/microsoft/vcpkg C:\vcpkg" -ForegroundColor Yellow
+    Write-Host "    2) C:\vcpkg\bootstrap-vcpkg.bat" -ForegroundColor Yellow
+    Write-Host "    3) C:\vcpkg\vcpkg.exe install sqlite3:x64-windows" -ForegroundColor Yellow
+    Write-Host "    4) setx CMAKE_TOOLCHAIN_FILE C:\vcpkg\scripts\buildsystems\vcpkg.cmake" -ForegroundColor Yellow
+    Write-Host "  Then open a new Developer PowerShell and re-run this launcher." -ForegroundColor Yellow
   }
 
   if ($blob -match "CMAKE_CXX_COMPILER|No CMAKE_CXX_COMPILER|No CMAKE_C_COMPILER|is not a full path to an existing compiler") {
     Write-Host "- C++ compiler not found in this shell." -ForegroundColor Yellow
-    Write-Host "  Install Visual Studio 2022 Build Tools (Desktop development with C++)." -ForegroundColor Yellow
-    Write-Host "  Then run this script from Developer PowerShell for VS 2022." -ForegroundColor Yellow
+    Write-Host "  Install Visual Studio Build Tools / Community with Desktop development with C++." -ForegroundColor Yellow
+    Write-Host "  Then run this script from Developer PowerShell for Visual Studio." -ForegroundColor Yellow
   }
 
   if ($blob -match "CMAKE_MAKE_PROGRAM|Ninja") {
     Write-Host "- Ninja may be missing from PATH." -ForegroundColor Yellow
     Write-Host "  Install: winget install Ninja-build.Ninja" -ForegroundColor Yellow
+  }
+
+  if ($blob -match "FindPackageHandleStandardArgs\.cmake") {
+    Write-Host "- A required dependency was not found by CMake." -ForegroundColor Yellow
+    Write-Host "  Scroll up to the first 'Could NOT find ...' line for the exact package name." -ForegroundColor Yellow
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($BuildDir)) {
+    $errorLog = Join-Path $BuildDir "CMakeFiles\CMakeError.log"
+    $outputLog = Join-Path $BuildDir "CMakeFiles\CMakeOutput.log"
+    if (Test-Path $errorLog) {
+      Write-Host "  CMake error log: $errorLog" -ForegroundColor Yellow
+    }
+    if (Test-Path $outputLog) {
+      Write-Host "  CMake output log: $outputLog" -ForegroundColor Yellow
+    }
   }
 }
 
@@ -105,7 +131,7 @@ if ($ConfigurePreset -match "ninja" -and -not (Command-Exists "ninja")) {
 
 $hasCompiler = (Command-Exists "cl.exe") -or (Command-Exists "g++.exe") -or (Command-Exists "clang++.exe")
 if (-not $hasCompiler) {
-  $missing.Add("C++ compiler (recommended: Visual Studio 2022 Build Tools + Developer PowerShell)")
+  $missing.Add("C++ compiler (install VS Community/Build Tools with Desktop development with C++)")
 }
 
 if ($missing.Count -gt 0) {
@@ -117,6 +143,7 @@ if ($missing.Count -gt 0) {
   Write-Host ""
   Write-Host "Important: PATH changes from installers are not visible in this already-open terminal." -ForegroundColor Yellow
   Write-Host "If you just installed CMake/Ninja/Build Tools, close this PowerShell window and open a new one." -ForegroundColor Yellow
+  Write-Host "Use 'Developer PowerShell for Visual Studio' (installed automatically with the C++ workload)." -ForegroundColor Yellow
   Write-Host "Then run this script again." -ForegroundColor Yellow
   exit 1
 }
@@ -133,7 +160,16 @@ try {
   Write-Step "Configuring ($ConfigurePreset)"
   $configureOutput = & cmake --preset $ConfigurePreset 2>&1 | Tee-Object -Variable configureLines
   if ($LASTEXITCODE -ne 0) {
-    Show-ConfigureHints -Lines $configureLines
+    $configureBlob = Join-Lines -Lines $configureLines
+    $presetBuildDir = ""
+    if ($configureBlob -match "Build files have been written to:\s*(.+)") {
+      $presetBuildDir = $Matches[1].Trim()
+    } elseif ($ConfigurePreset -eq "ninja-debug") {
+      $presetBuildDir = Join-Path $repoRoot "build\debug"
+    } elseif ($ConfigurePreset -eq "ninja-release") {
+      $presetBuildDir = Join-Path $repoRoot "build\release"
+    }
+    Show-ConfigureHints -Lines $configureLines -BuildDir $presetBuildDir
     throw "CMake configure failed."
   }
 

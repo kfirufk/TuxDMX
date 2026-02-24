@@ -164,6 +164,8 @@ Optional flags:
 
 ### Windows (MSVC)
 
+Run these commands from **Developer PowerShell for Visual Studio** (installed with the `Desktop development with C++` workload):
+
 ```powershell
 cmake -S . -B build\debug -G "Ninja" -DCMAKE_BUILD_TYPE=Debug
 cmake --build build\debug
@@ -173,6 +175,8 @@ cmake --build build\debug
 Open `http://<server-ip>:8080` from phone/desktop browser.
 
 ### Windows One-Command Run Script
+
+Open **Developer PowerShell for Visual Studio**, then run:
 
 ```bat
 .\scripts\run_tuxdmx_windows.cmd
@@ -203,6 +207,15 @@ If direct `.ps1` execution is blocked, run once in that shell:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+If configure fails with `Could NOT find SQLite3`, install SQLite dev files with vcpkg and set toolchain:
+
+```powershell
+git clone https://github.com/microsoft/vcpkg C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+C:\vcpkg\vcpkg.exe install sqlite3:x64-windows
+setx CMAKE_TOOLCHAIN_FILE C:\vcpkg\scripts\buildsystems\vcpkg.cmake
 ```
 
 ## Tests

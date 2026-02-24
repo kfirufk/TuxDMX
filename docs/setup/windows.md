@@ -6,7 +6,7 @@
 - PowerShell 5.1+ or PowerShell 7+
 - CMake 3.28+
 - Ninja (for `ninja-*` presets)
-- C++ compiler (recommended: Visual Studio 2022 Build Tools, Desktop C++)
+- C++ compiler (Visual Studio Community/Build Tools with `Desktop development with C++`)
 - SQLite3 development files available to CMake
 
 Optional:
@@ -15,9 +15,13 @@ Optional:
 
 ## Quick Start
 
+Use **Developer PowerShell for Visual Studio** (from Start menu), then run:
+
 ```bat
 .\scripts\run_tuxdmx_windows.cmd
 ```
+
+`Developer PowerShell for Visual Studio` is installed automatically when you install the C++ workload.
 
 The launcher:
 - starts the PowerShell script with per-process execution policy bypass (no permanent policy change)
@@ -71,3 +75,16 @@ If direct `.ps1` execution is blocked, either use the `.cmd` launcher above, or 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
+
+## Common Configure Failure: SQLite3 Not Found
+
+If CMake fails with `FindPackageHandleStandardArgs.cmake` and `Could NOT find SQLite3`, install SQLite3 dev files via vcpkg:
+
+```powershell
+git clone https://github.com/microsoft/vcpkg C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+C:\vcpkg\vcpkg.exe install sqlite3:x64-windows
+setx CMAKE_TOOLCHAIN_FILE C:\vcpkg\scripts\buildsystems\vcpkg.cmake
+```
+
+Then close all terminals, open a new Developer PowerShell, and run the launcher again.
