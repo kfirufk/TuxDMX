@@ -257,8 +257,9 @@ if ([string]::IsNullOrWhiteSpace($vcpkgRoot) -or -not (Test-Path (Join-Path $vcp
   }
 
   $rtMidiHeader = Join-Path $vcpkgRoot "installed\$triplet\include\RtMidi.h"
+  $rtMidiHeaderAlt = Join-Path $vcpkgRoot "installed\$triplet\include\rtmidi\RtMidi.h"
   $rtMidiLib = Join-Path $vcpkgRoot "installed\$triplet\lib\rtmidi.lib"
-  if (-not (Test-Path $rtMidiHeader) -or -not (Test-Path $rtMidiLib)) {
+  if ((-not (Test-Path $rtMidiHeader) -and -not (Test-Path $rtMidiHeaderAlt)) -or -not (Test-Path $rtMidiLib)) {
     $optionalMissing.Add("RtMidi for server MIDI support (install: $vcpkgRoot\\vcpkg.exe install rtmidi:$triplet)")
   }
 }
