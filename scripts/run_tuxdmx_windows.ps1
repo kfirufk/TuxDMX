@@ -29,6 +29,28 @@ function Command-Exists {
   return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Invoke-NativeLogged {
+  param(
+    [Parameter(Mandatory = $true)][string]$Command,
+    [string[]]$Arguments = @()
+  )
+
+  $previousErrorAction = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $allLines = & $Command @Arguments 2>&1 | Tee-Object -Variable capturedLines
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorAction
+  }
+
+  return @{
+    ExitCode = $exitCode
+    Lines = @($capturedLines)
+    Output = $allLines
+  }
+}
+
 function Join-Lines {
   param([object[]]$Lines)
   if ($null -eq $Lines) {
@@ -158,9 +180,9 @@ $launched = $false
 
 try {
   Write-Step "Configuring ($ConfigurePreset)"
-  $configureOutput = & cmake --preset $ConfigurePreset 2>&1 | Tee-Object -Variable configureLines
-  if ($LASTEXITCODE -ne 0) {
-    $configureBlob = Join-Lines -Lines $configureLines
+  $configureResult = Invoke-NativeLogged -Command "cmake" -Arguments @("--preset", $ConfigurePreset)
+  if ($configureResult.ExitCode -ne 0) {
+    $configureBlob = Join-Lines -Lines $configureResult.Lines
     $presetBuildDir = ""
     if ($configureBlob -match "Build files have been written to:\s*(.+)") {
       $presetBuildDir = $Matches[1].Trim()
@@ -169,20 +191,20 @@ try {
     } elseif ($ConfigurePreset -eq "ninja-release") {
       $presetBuildDir = Join-Path $repoRoot "build\release"
     }
-    Show-ConfigureHints -Lines $configureLines -BuildDir $presetBuildDir
+    Show-ConfigureHints -Lines $configureResult.Lines -BuildDir $presetBuildDir
     throw "CMake configure failed."
   }
 
   Write-Step "Building ($BuildPreset)"
-  & cmake --build --preset $BuildPreset
-  if ($LASTEXITCODE -ne 0) {
+  $buildResult = Invoke-NativeLogged -Command "cmake" -Arguments @("--build", "--preset", $BuildPreset)
+  if ($buildResult.ExitCode -ne 0) {
     throw "CMake build failed."
   }
 
   if ($RunTests.IsPresent) {
     Write-Step "Running tests ($TestPreset)"
-    & ctest --preset $TestPreset
-    if ($LASTEXITCODE -ne 0) {
+    $testResult = Invoke-NativeLogged -Command "ctest" -Arguments @("--preset", $TestPreset)
+    if ($testResult.ExitCode -ne 0) {
       throw "CTest failed."
     }
   }
