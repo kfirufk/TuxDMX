@@ -1,9 +1,24 @@
+# Build outputs
 /build/
+/CMakeCache.txt
+/CMakeFiles/
+/compile_commands.json
+
+# Local cache
 /.cache/
+
+# Runtime/generated data
 /data/*.sqlite
 /data/*.sqlite-shm
 /data/*.sqlite-wal
 /data/*.sqlite-journal
 /data/*.log
 /data/*.log.*
+/data/backups/
+/data/**/*.sqlite
+/data/**/*.sqlite-shm
+/data/**/*.sqlite-wal
+/data/**/*.sqlite-journal
+
+# OS/editor noise
 /.DS_Store
