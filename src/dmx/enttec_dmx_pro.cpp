@@ -171,6 +171,20 @@ std::vector<std::string> enumerateWindowsComPorts() {
 
   std::sort(ports.begin(), ports.end());
   ports.erase(std::unique(ports.begin(), ports.end()), ports.end());
+
+  // Fallback/augmentation for environments where SetupAPI class enumeration
+  // misses some serial devices. Query DOS namespace for COM1..COM256.
+  std::array<char, 512> devicePath{};
+  for (int i = 1; i <= 256; ++i) {
+    const std::string portName = "COM" + std::to_string(i);
+    const DWORD rc = QueryDosDeviceA(portName.c_str(), devicePath.data(), static_cast<DWORD>(devicePath.size()));
+    if (rc != 0) {
+      ports.push_back(portName);
+    }
+  }
+
+  std::sort(ports.begin(), ports.end());
+  ports.erase(std::unique(ports.begin(), ports.end()), ports.end());
   return ports;
 }
 #endif
