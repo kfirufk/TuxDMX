@@ -95,3 +95,15 @@ setx CMAKE_TOOLCHAIN_FILE C:\vcpkg\scripts\buildsystems\vcpkg.cmake
 ```
 
 Then close all terminals, open **x64 Native Tools Command Prompt for VS**, run `powershell`, and run the launcher again.
+
+## Enable Real Audio + Server MIDI (Windows)
+
+To enable audio input device selection and server-side MIDI mapping, install optional backend packages:
+
+```powershell
+C:\vcpkg\vcpkg.exe install portaudio:x64-windows rtmidi:x64-windows
+```
+
+Then rebuild with the launcher. If these are missing:
+- audio status will show simulated fallback (`Selected: Default (None)`)
+- MIDI status will show backend unavailable.

@@ -156,6 +156,7 @@ if ([string]::IsNullOrWhiteSpace($LogFile)) {
 }
 
 $missing = New-Object System.Collections.Generic.List[string]
+$optionalMissing = New-Object System.Collections.Generic.List[string]
 $warnings = New-Object System.Collections.Generic.List[string]
 
 if (-not (Command-Exists "cmake")) {
@@ -247,6 +248,19 @@ if ([string]::IsNullOrWhiteSpace($vcpkgRoot) -or -not (Test-Path (Join-Path $vcp
   if (-not (Test-Path $sqliteHeader) -or -not (Test-Path $sqliteLib)) {
     $missing.Add("sqlite3 for $triplet (run: $vcpkgRoot\\vcpkg.exe install sqlite3:$triplet)")
   }
+
+  $portAudioHeader = Join-Path $vcpkgRoot "installed\$triplet\include\portaudio.h"
+  $portAudioLib1 = Join-Path $vcpkgRoot "installed\$triplet\lib\portaudio.lib"
+  $portAudioLib2 = Join-Path $vcpkgRoot "installed\$triplet\lib\portaudio_x64.lib"
+  if (-not (Test-Path $portAudioHeader) -or (-not (Test-Path $portAudioLib1) -and -not (Test-Path $portAudioLib2))) {
+    $optionalMissing.Add("PortAudio for real microphone input (install: $vcpkgRoot\\vcpkg.exe install portaudio:$triplet)")
+  }
+
+  $rtMidiHeader = Join-Path $vcpkgRoot "installed\$triplet\include\RtMidi.h"
+  $rtMidiLib = Join-Path $vcpkgRoot "installed\$triplet\lib\rtmidi.lib"
+  if (-not (Test-Path $rtMidiHeader) -or -not (Test-Path $rtMidiLib)) {
+    $optionalMissing.Add("RtMidi for server MIDI support (install: $vcpkgRoot\\vcpkg.exe install rtmidi:$triplet)")
+  }
 }
 
 if ([string]::IsNullOrWhiteSpace($env:CMAKE_TOOLCHAIN_FILE) -or -not (Test-Path $env:CMAKE_TOOLCHAIN_FILE)) {
@@ -273,6 +287,13 @@ if ($missing.Count -gt 0) {
 
 foreach ($w in $warnings) {
   Write-Host "[info] $w" -ForegroundColor DarkYellow
+}
+
+if ($optionalMissing.Count -gt 0) {
+  Write-Host "[warn] Optional backends missing. Build will run, but some features will be unavailable:" -ForegroundColor Yellow
+  foreach ($m in $optionalMissing) {
+    Write-Host "  - $m" -ForegroundColor Yellow
+  }
 }
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DbPath) | Out-Null

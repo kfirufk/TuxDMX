@@ -221,6 +221,12 @@ C:\vcpkg\vcpkg.exe install sqlite3:x64-windows
 setx CMAKE_TOOLCHAIN_FILE C:\vcpkg\scripts\buildsystems\vcpkg.cmake
 ```
 
+For real microphone device input + server MIDI on Windows, also install:
+
+```powershell
+C:\vcpkg\vcpkg.exe install portaudio:x64-windows rtmidi:x64-windows
+```
+
 ## Tests
 
 ```bash
