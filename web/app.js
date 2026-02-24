@@ -63,6 +63,7 @@ const state = {
   },
   activeView: 'live',
   controlMode: 'slider',
+  themeMode: 'light',
   compactMode: false,
   hideMidiMode: false,
   templateEditingId: null,
@@ -137,6 +138,7 @@ const els = {
   controlModeKnob: document.getElementById('control-mode-knob'),
   layoutCompactToggle: document.getElementById('layout-compact-toggle'),
   layoutHideMidiToggle: document.getElementById('layout-hide-midi-toggle'),
+  themeToggle: document.getElementById('theme-toggle'),
   controlModeButtons: [...document.querySelectorAll('[data-control-mode]')],
   audioReactiveMidiLearn: document.getElementById('audio-reactive-midi-learn'),
   audioReactiveMidiClear: document.getElementById('audio-reactive-midi-clear'),
@@ -299,6 +301,7 @@ function iconBadge(kindOrLabel, byLabel = false) {
 const LAYOUT_STORAGE_KEY = 'tuxdmx.layout.v1';
 const MIDI_REACTIVE_CONTROL_ID = 'audio:reactive';
 const PERFORMANCE_STORAGE_KEY = 'tuxdmx.performance.v1';
+const THEME_STORAGE_KEY = 'tuxdmx.theme.v1';
 const DMX_DEVICE_AUTO_VALUE = '__auto__';
 
 function formatUnixMs(ms) {
@@ -585,6 +588,28 @@ function setControlMode(mode, { persist = true, rerender = true } = {}) {
   }
 }
 
+function setThemeMode(mode, { persist = true } = {}) {
+  const nextMode = mode === 'dark' ? 'dark' : 'light';
+  state.themeMode = nextMode;
+
+  const darkEnabled = nextMode === 'dark';
+  document.body.classList.toggle('theme-dark', darkEnabled);
+
+  if (els.themeToggle) {
+    els.themeToggle.classList.toggle('is-active', darkEnabled);
+    els.themeToggle.setAttribute('aria-pressed', darkEnabled ? 'true' : 'false');
+    els.themeToggle.textContent = darkEnabled ? 'Theme: Dark' : 'Theme: Light';
+  }
+
+  if (persist) {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, nextMode);
+    } catch {
+      // Ignore storage write failures.
+    }
+  }
+}
+
 function persistLayoutPreferences() {
   try {
     window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({
@@ -643,11 +668,13 @@ function setHideMidiMode(enabled, { persist = true, rerender = true } = {}) {
 function initializeUiPreferences() {
   let savedView = 'live';
   let savedMode = 'slider';
+  let savedTheme = '';
   let savedCompact = false;
   let savedHideMidi = false;
   try {
     savedView = window.localStorage.getItem('tuxdmx.activeView') || 'live';
     savedMode = window.localStorage.getItem('tuxdmx.controlMode') || 'slider';
+    savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY) || '';
     const rawLayout = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
     if (rawLayout) {
       const parsed = JSON.parse(rawLayout);
@@ -662,6 +689,11 @@ function initializeUiPreferences() {
   if (savedCompact && savedHideMidi) {
     savedHideMidi = false;
   }
+  if (!savedTheme) {
+    savedTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
+  setThemeMode(savedTheme, { persist: false });
   setActiveView(savedView, { persist: false });
   setControlMode(savedMode, { persist: false, rerender: false });
   setCompactMode(savedCompact, { persist: false, rerender: false });
@@ -3403,6 +3435,11 @@ function installEventListeners() {
   if (els.layoutHideMidiToggle) {
     els.layoutHideMidiToggle.addEventListener('click', () => {
       setHideMidiMode(!state.hideMidiMode);
+    });
+  }
+  if (els.themeToggle) {
+    els.themeToggle.addEventListener('click', () => {
+      setThemeMode(state.themeMode === 'dark' ? 'light' : 'dark');
     });
   }
   document.addEventListener('click', (event) => {
