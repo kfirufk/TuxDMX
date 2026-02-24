@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 
+#include "dmx_backend_factory.hpp"
 #include "utils.hpp"
 
 namespace tuxdmx {
@@ -17,7 +18,11 @@ std::array<std::uint8_t, 512> makeZeroUniverse() {
 
 }  // namespace
 
-DmxEngine::DmxEngine() { universes_.emplace(1, makeZeroUniverse()); }
+DmxEngine::DmxEngine(std::string backendName) {
+  std::string error;
+  backend_ = createDmxOutputBackend(backendName, error);
+  universes_.emplace(1, makeZeroUniverse());
+}
 
 DmxEngine::~DmxEngine() { stop(); }
 
@@ -40,17 +45,19 @@ void DmxEngine::stop() {
     worker_.join();
   }
 
-  // DMX USB Pro can keep transmitting its last universe after the host app exits.
+  // Some interfaces can keep transmitting the last frame after host exit.
   // Write explicit blackout frames so fixtures do not remain in active/macro states.
-  const auto blackout = makeZeroUniverse();
-  for (int i = 0; i < 3; ++i) {
-    if (!device_.sendUniverse(blackout)) {
-      break;
+  if (backend_) {
+    const auto blackout = makeZeroUniverse();
+    for (int i = 0; i < 3; ++i) {
+      if (!backend_->sendUniverse(blackout)) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(12));
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(12));
-  }
 
-  device_.disconnect();
+    backend_->disconnect();
+  }
 }
 
 void DmxEngine::setChannel(int universe, int absoluteAddress, int value) {
@@ -105,9 +112,26 @@ int DmxEngine::outputUniverse() const {
   return outputUniverse_;
 }
 
-void DmxEngine::setWriteRetryLimit(int limit) { device_.setWriteRetryLimit(limit); }
+void DmxEngine::setWriteRetryLimit(int limit) {
+  if (!backend_) {
+    return;
+  }
+  backend_->setWriteRetryLimit(limit);
+}
 
-int DmxEngine::writeRetryLimit() const { return device_.writeRetryLimit(); }
+int DmxEngine::writeRetryLimit() const {
+  if (!backend_) {
+    return DmxDeviceStatus{}.writeRetryLimit;
+  }
+  return backend_->writeRetryLimit();
+}
+
+std::string DmxEngine::backendName() const {
+  if (!backend_) {
+    return "unknown";
+  }
+  return backend_->backendName();
+}
 
 std::vector<int> DmxEngine::knownUniverses() const {
   std::scoped_lock lock(mutex_);
@@ -120,7 +144,14 @@ std::vector<int> DmxEngine::knownUniverses() const {
   return universes;
 }
 
-DmxDeviceStatus DmxEngine::status() const { return device_.status(); }
+DmxDeviceStatus DmxEngine::status() const {
+  if (!backend_) {
+    DmxDeviceStatus fallback;
+    fallback.lastError = "No DMX backend available";
+    return fallback;
+  }
+  return backend_->status();
+}
 
 void DmxEngine::workerLoop() {
   auto lastDiscover = std::chrono::steady_clock::time_point{};
@@ -128,11 +159,13 @@ void DmxEngine::workerLoop() {
   while (running_.load()) {
     const auto now = std::chrono::steady_clock::now();
 
-    auto status = device_.status();
+    auto status = this->status();
     if (!status.connected && (lastDiscover.time_since_epoch().count() == 0 || now - lastDiscover > std::chrono::seconds(3))) {
-      device_.discoverAndConnect();
+      if (backend_) {
+        backend_->discoverAndConnect();
+      }
       lastDiscover = now;
-      status = device_.status();
+      status = this->status();
     }
 
     if (status.connected) {
@@ -143,7 +176,9 @@ void DmxEngine::workerLoop() {
           snapshot = it->second;
         }
       }
-      device_.sendUniverse(snapshot);
+      if (backend_) {
+        backend_->sendUniverse(snapshot);
+      }
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(33));

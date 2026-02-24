@@ -4,8 +4,10 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "app_controller.hpp"
+#include "dmx_backend_factory.hpp"
 #include "http_server.hpp"
 #include "logger.hpp"
 #include "utils.hpp"
@@ -16,9 +18,15 @@ std::atomic<bool> gStopRequested = false;
 void handleSignal(int) { gStopRequested.store(true); }
 
 void printUsage(const char* argv0) {
+  const auto backends = tuxdmx::supportedDmxBackendNames();
   std::cout << "Usage: " << argv0
             << " [--bind 0.0.0.0] [--port 8080] [--db data/tuxdmx.sqlite] [--web-root ./web] [--log-file "
-               "data/tuxdmx.log]\n";
+               "data/tuxdmx.log] [--dmx-backend enttec-usb-pro]\n";
+  std::cout << "Supported DMX backends:";
+  for (const auto& backend : backends) {
+    std::cout << ' ' << backend;
+  }
+  std::cout << "\n";
 }
 
 }  // namespace
@@ -29,6 +37,7 @@ int main(int argc, char** argv) {
   std::string dbPath = "data/tuxdmx.sqlite";
   std::string webRoot = TUXDMX_DEFAULT_WEB_ROOT;
   std::string logFilePath = "data/tuxdmx.log";
+  std::string dmxBackend = std::string(tuxdmx::kDefaultDmxBackendName);
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -45,6 +54,8 @@ int main(int argc, char** argv) {
       webRoot = argv[++i];
     } else if (arg == "--log-file" && i + 1 < argc) {
       logFilePath = argv[++i];
+    } else if (arg == "--dmx-backend" && i + 1 < argc) {
+      dmxBackend = argv[++i];
     } else if (arg == "--help" || arg == "-h") {
       printUsage(argv[0]);
       return 0;
@@ -53,6 +64,13 @@ int main(int argc, char** argv) {
       printUsage(argv[0]);
       return 1;
     }
+  }
+
+  dmxBackend = tuxdmx::normalizeDmxBackendName(dmxBackend);
+  if (!tuxdmx::isSupportedDmxBackendName(dmxBackend)) {
+    std::cerr << "Invalid --dmx-backend value: " << dmxBackend << "\n";
+    printUsage(argv[0]);
+    return 1;
   }
 
   std::signal(SIGINT, handleSignal);
@@ -67,7 +85,7 @@ int main(int argc, char** argv) {
   tuxdmx::logMessage(tuxdmx::LogLevel::Info, "server", "Starting tuxdmx");
   tuxdmx::logMessage(tuxdmx::LogLevel::Info, "server", std::string("Log file: ") + logFilePath);
 
-  tuxdmx::AppController app(dbPath, webRoot);
+  tuxdmx::AppController app(dbPath, webRoot, dmxBackend);
   std::string error;
   if (!app.initialize(error)) {
     std::cerr << "Failed to initialize app: " << error << "\n";

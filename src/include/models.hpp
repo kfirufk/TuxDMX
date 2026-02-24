@@ -51,7 +51,9 @@ struct FixtureGroup {
 };
 
 struct DmxDeviceStatus {
+  std::string backend = "unknown";
   bool connected = false;
+  std::string endpoint;
   std::string port;
   std::string serial;
   int firmwareMajor = 0;

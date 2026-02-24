@@ -1,6 +1,6 @@
 # TuxDMX
 
-Cross-platform C++23 DMX control server for **ENTTEC/DMX USB Pro-compatible interfaces** with a responsive web UI for desktop/tablet/phone.
+Cross-platform C++23 DMX control server with a responsive web UI for desktop/tablet/phone.
 
 The app follows a server/client model: the DMX engine runs on one host machine, and any device on the same network can open the web UI and control lights through that server.
 
@@ -26,6 +26,7 @@ The Learn/Template workflow is designed so you can test channels live while buil
 ## Implemented Features
 
 - C++23 backend with CMake + presets.
+- Pluggable DMX output backend architecture (current backend: `enttec-usb-pro`).
 - SQLite persistence for:
   - fixture templates
   - channel definitions and value ranges
@@ -38,13 +39,13 @@ The Learn/Template workflow is designed so you can test channels live while buil
   - **AliExpress 60x3W RGB PAR**
   - **Mira Dye** (A-mode 13ch layout)
   - automatic one-time migration: if an older `Mira Dye` layout is detected, it is preserved as **Mira Dye (D Mode Legacy)** and `Mira Dye` is updated to A-mode
-- ENTTEC DMX USB Pro discovery and status reporting:
+- `enttec-usb-pro` backend features:
   - serial-port scan
   - serial probe (`0x7E 0x0A 0x00 0x00 0xE7`)
   - firmware and serial surfaced in UI
 - Multi-universe engine model:
   - stores/updates multiple universes
-  - routes selected output universe to DMX USB Pro
+  - routes selected output universe to active DMX backend
   - explicit create-universe API/UI for quick setup
 - Live control UI:
   - fixture cards with per-channel sliders (default)
@@ -113,6 +114,12 @@ The Learn/Template workflow is designed so you can test channels live while buil
 cmake --preset ninja-debug
 cmake --build --preset build-debug
 ./build/debug/tuxdmx --bind 0.0.0.0 --port 8080
+```
+
+To explicitly select a DMX backend:
+
+```bash
+./build/debug/tuxdmx --dmx-backend enttec-usb-pro
 ```
 
 ### macOS One-Command Run Script
@@ -249,6 +256,7 @@ ctest --preset test-debug
 - [Credits](./CREDITS.md)
 - [Documentation index](./docs/README.md)
 - [API guide for custom UIs](./docs/api/README.md)
+- [DMX backend development guide](./docs/development/dmx-backends.md)
 
 ## Acknowledgements
 

@@ -526,8 +526,11 @@ void appendMidiMappingArrayJson(std::ostringstream& ss, const std::vector<MidiMa
 
 }  // namespace
 
-AppController::AppController(std::string dbPath, std::string webRoot)
-    : dbPath_(std::move(dbPath)), webRoot_(std::move(webRoot)), db_(dbPath_) {
+AppController::AppController(std::string dbPath, std::string webRoot, std::string dmxBackendName)
+    : dbPath_(std::move(dbPath)),
+      webRoot_(std::move(webRoot)),
+      db_(dbPath_),
+      dmx_(std::move(dmxBackendName)) {
   std::random_device rd;
   reactiveRng_.seed(rd());
 }
@@ -549,6 +552,7 @@ bool AppController::initialize(std::string& error) {
 
   rebuildAllUniversesFromDatabase();
 
+  logMessage(LogLevel::Info, "dmx", "Selected DMX backend: " + dmx_.backendName());
   dmx_.start();
 
   audio_.setTickCallback([this](const AudioMetrics& metrics) { onAudioMetrics(metrics); });
@@ -682,7 +686,9 @@ std::string AppController::buildStatusJson() {
 
   std::ostringstream ss;
   ss << "{\"ok\":true,\"dmx\":{";
+  ss << "\"backend\":\"" << jsonEscape(dmxStatus.backend) << "\",";
   ss << "\"connected\":" << jsonBool(dmxStatus.connected) << ',';
+  ss << "\"endpoint\":\"" << jsonEscape(dmxStatus.endpoint) << "\",";
   ss << "\"port\":\"" << jsonEscape(dmxStatus.port) << "\",";
   ss << "\"serial\":\"" << jsonEscape(dmxStatus.serial) << "\",";
   ss << "\"firmwareMajor\":" << dmxStatus.firmwareMajor << ',';
@@ -791,7 +797,9 @@ std::string AppController::buildStateJson() {
   ss << "{\"ok\":true";
 
   ss << ",\"dmx\":{";
+  ss << "\"backend\":\"" << jsonEscape(dmxStatus.backend) << "\",";
   ss << "\"connected\":" << jsonBool(dmxStatus.connected) << ',';
+  ss << "\"endpoint\":\"" << jsonEscape(dmxStatus.endpoint) << "\",";
   ss << "\"port\":\"" << jsonEscape(dmxStatus.port) << "\",";
   ss << "\"serial\":\"" << jsonEscape(dmxStatus.serial) << "\",";
   ss << "\"firmwareMajor\":" << dmxStatus.firmwareMajor << ',';

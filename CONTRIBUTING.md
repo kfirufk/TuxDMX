@@ -17,6 +17,7 @@ See platform-specific instructions:
 - [Linux](./docs/setup/linux.md)
 - [macOS](./docs/setup/macos.md)
 - [Windows](./docs/setup/windows.md)
+- [DMX backend development guide](./docs/development/dmx-backends.md)
 
 ## Build and Test
 

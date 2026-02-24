@@ -125,9 +125,11 @@ std::string parseSerialHex(const std::vector<std::uint8_t>& payload) {
 
 }  // namespace
 
-EnttecDmxPro::EnttecDmxPro() = default;
+EnttecDmxPro::EnttecDmxPro() { status_.backend = backendName(); }
 
 EnttecDmxPro::~EnttecDmxPro() { disconnect(); }
+
+std::string EnttecDmxPro::backendName() const { return "enttec-usb-pro"; }
 
 std::vector<std::string> EnttecDmxPro::candidatePorts() const {
   std::vector<std::string> candidates;
@@ -391,7 +393,9 @@ bool EnttecDmxPro::discoverAndConnect() {
   auto ports = candidatePorts();
   if (ports.empty()) {
     std::scoped_lock lock(mutex_);
+    status_.backend = backendName();
     status_.connected = false;
+    status_.endpoint.clear();
     status_.lastError = "No candidate serial ports found";
     return false;
   }
@@ -404,7 +408,9 @@ bool EnttecDmxPro::discoverAndConnect() {
 
     if (probePort(port, serial, fwMajor, fwMinor, error)) {
       std::scoped_lock relock(mutex_);
+      status_.backend = backendName();
       status_.connected = true;
+      status_.endpoint = port;
       status_.port = port;
       status_.serial = serial;
       status_.firmwareMajor = fwMajor;
@@ -416,7 +422,9 @@ bool EnttecDmxPro::discoverAndConnect() {
     }
 
     std::scoped_lock relock(mutex_);
+    status_.backend = backendName();
     status_.connected = false;
+    status_.endpoint.clear();
     status_.port.clear();
     status_.serial.clear();
     status_.firmwareMajor = 0;
@@ -443,6 +451,7 @@ void EnttecDmxPro::disconnect() {
 #endif
 
   status_.connected = false;
+  status_.endpoint.clear();
   status_.port.clear();
   status_.serial.clear();
   status_.firmwareMajor = 0;
@@ -514,6 +523,10 @@ int EnttecDmxPro::writeRetryLimit() const {
 DmxDeviceStatus EnttecDmxPro::status() const {
   std::scoped_lock lock(mutex_);
   DmxDeviceStatus out = status_;
+  out.backend = backendName();
+  if (out.endpoint.empty()) {
+    out.endpoint = out.port;
+  }
   out.writeRetryLimit = writeRetryLimit_;
   out.consecutiveWriteFailures = consecutiveWriteFailures_;
   return out;

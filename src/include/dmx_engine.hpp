@@ -3,18 +3,20 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
-#include "enttec_dmx_pro.hpp"
+#include "dmx_output_backend.hpp"
 
 namespace tuxdmx {
 
 class DmxEngine {
  public:
-  DmxEngine();
+  explicit DmxEngine(std::string backendName);
   ~DmxEngine();
 
   DmxEngine(const DmxEngine&) = delete;
@@ -31,6 +33,7 @@ class DmxEngine {
   int outputUniverse() const;
   void setWriteRetryLimit(int limit);
   int writeRetryLimit() const;
+  std::string backendName() const;
   std::vector<int> knownUniverses() const;
 
   DmxDeviceStatus status() const;
@@ -41,7 +44,7 @@ class DmxEngine {
   mutable std::mutex mutex_;
   std::unordered_map<int, std::array<std::uint8_t, 512>> universes_;
   int outputUniverse_ = 1;
-  EnttecDmxPro device_;
+  std::unique_ptr<DmxOutputBackend> backend_;
   std::atomic<bool> running_{false};
   std::thread worker_;
 };

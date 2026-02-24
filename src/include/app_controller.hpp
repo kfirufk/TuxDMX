@@ -20,7 +20,7 @@ namespace tuxdmx {
 
 class AppController {
  public:
-  AppController(std::string dbPath, std::string webRoot);
+  AppController(std::string dbPath, std::string webRoot, std::string dmxBackendName = "enttec-usb-pro");
   ~AppController();
 
   bool initialize(std::string& error);

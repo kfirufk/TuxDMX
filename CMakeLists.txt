@@ -18,6 +18,7 @@ set(TUXDMX_SOURCES
     src/app/app_controller.cpp
     src/audio/audio_engine.cpp
     src/db/database.cpp
+    src/dmx/dmx_backend_factory.cpp
     src/dmx/dmx_engine.cpp
     src/dmx/enttec_dmx_pro.cpp
     src/http/http_server.cpp

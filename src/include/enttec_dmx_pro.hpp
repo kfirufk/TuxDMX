@@ -6,11 +6,11 @@
 #include <string>
 #include <vector>
 
-#include "models.hpp"
+#include "dmx_output_backend.hpp"
 
 namespace tuxdmx {
 
-class EnttecDmxPro {
+class EnttecDmxPro final : public DmxOutputBackend {
  public:
   EnttecDmxPro();
   ~EnttecDmxPro();
@@ -18,13 +18,14 @@ class EnttecDmxPro {
   EnttecDmxPro(const EnttecDmxPro&) = delete;
   EnttecDmxPro& operator=(const EnttecDmxPro&) = delete;
 
-  bool discoverAndConnect();
-  void disconnect();
+  std::string backendName() const override;
+  bool discoverAndConnect() override;
+  void disconnect() override;
 
-  bool sendUniverse(const std::array<std::uint8_t, 512>& channels);
-  void setWriteRetryLimit(int limit);
-  int writeRetryLimit() const;
-  DmxDeviceStatus status() const;
+  bool sendUniverse(const std::array<std::uint8_t, 512>& channels) override;
+  void setWriteRetryLimit(int limit) override;
+  int writeRetryLimit() const override;
+  DmxDeviceStatus status() const override;
 
  private:
   bool probePort(const std::string& port, std::string& serial, int& fwMajor, int& fwMinor, std::string& error);
