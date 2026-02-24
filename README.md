@@ -1,6 +1,27 @@
 # TuxDMX
 
-Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a responsive web UI for desktop/tablet/phone.
+Cross-platform C++23 DMX control server for **ENTTEC/DMX USB Pro-compatible interfaces** with a responsive web UI for desktop/tablet/phone.
+
+The app follows a server/client model: the DMX engine runs on one host machine, and any device on the same network can open the web UI and control lights through that server.
+
+## Project Status
+
+**Experimental (active development).**
+
+This project is usable, but not production-stable yet. Active work is ongoing, including fixture-template tuning and intermittent device stability investigations on some hardware/cabling combinations.
+
+## Why This Project Exists
+
+TuxDMX started as a personal project to build a **simpler, faster-to-use DMX workflow** than many available free and paid tools. The focus is practical live control: patch fixtures quickly, define custom fixture templates (including unknown fixtures), save/recall scenes, and run music-reactive looks without navigating overly complex interfaces.
+
+Initial development and testing were centered on a **NETTEC/ENTTEC DMX USB Pro-style interface**, with emphasis on reducing setup friction for small and medium live sessions.
+
+The Learn/Template workflow is designed so you can test channels live while building a fixture profile. This is useful for low-cost fixtures, undocumented fixtures, or fixtures where the manual/channel table is missing.
+
+## Maintainer
+
+- **Kfir Ozer**  
+  Email: [ufkfir@icloud.com](mailto:ufkfir@icloud.com)
 
 ## Implemented Features
 
@@ -219,3 +240,22 @@ ctest --preset test-debug
 - ENTTEC DMX USB Pro is a single physical DMX output. This app supports multiple universes in software and lets you select which universe is routed to the hardware output.
 - MIDI mapping is handled in the server (RtMidi when available, CoreMIDI fallback on macOS), so control is not tied to browser Web MIDI support.
 - Reactive formulas are intentionally commented in `/Volumes/extreme-ssd/projects/dmx512/tuxdmx/src/app/app_controller.cpp` and `/Volumes/extreme-ssd/projects/dmx512/tuxdmx/src/audio/audio_engine.cpp` so you can tune behavior quickly.
+
+## Open Source Project Files
+
+- [Contributing guide](./CONTRIBUTING.md)
+- [Known issues](./KNOWN_ISSUES.md)
+- [Changelog](./CHANGELOG.md)
+- [Credits](./CREDITS.md)
+- [Documentation index](./docs/README.md)
+- [API guide for custom UIs](./docs/api/README.md)
+
+## Acknowledgements
+
+Initial architecture and a significant part of the current implementation were developed with AI assistance using **OpenAI Codex**, with technical direction and ongoing maintenance by the project maintainer.
+
+OpenAI is not affiliated with, and does not endorse, this project.
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).

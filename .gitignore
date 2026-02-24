@@ -3,4 +3,7 @@
 /data/*.sqlite
 /data/*.sqlite-shm
 /data/*.sqlite-wal
+/data/*.sqlite-journal
+/data/*.log
+/data/*.log.*
 /.DS_Store
