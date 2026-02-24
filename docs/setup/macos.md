@@ -74,8 +74,20 @@ Example:
 ./scripts/run_tuxdmx_mac.sh --port 8090 --bind 0.0.0.0 --no-open
 ```
 
-## Package Hint (Homebrew)
+## Package Hints (Homebrew)
+
+Core build dependencies:
 
 ```bash
 brew install cmake ninja sqlite
+```
+
+Optional runtime backends:
+
+```bash
+brew install rtmidi
+```
+
+```bash
+brew install portaudio
 ```

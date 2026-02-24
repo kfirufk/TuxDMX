@@ -111,6 +111,18 @@ The Learn/Template workflow is designed so you can test channels live while buil
 - Optional: RtMidi (`rtmidi`) for server-side MIDI input (cross-platform backend)
 - macOS fallback: CoreMIDI backend is used automatically when RtMidi is not installed
 
+macOS Homebrew quick install:
+
+```bash
+brew install cmake ninja sqlite rtmidi
+```
+
+Optional on macOS (for real audio capture):
+
+```bash
+brew install portaudio
+```
+
 ### OS-Specific Setup Guides
 
 - [Linux guide](./docs/setup/linux.md)
