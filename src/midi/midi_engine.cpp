@@ -9,12 +9,10 @@
 #include <utility>
 
 #ifdef TUXDMX_WITH_RTMIDI
-#if __has_include(<RtMidi.h>)
-#include <RtMidi.h>
-#elif __has_include(<rtmidi/RtMidi.h>)
+#ifdef _WIN32
 #include <rtmidi/RtMidi.h>
 #else
-#error "TUXDMX_WITH_RTMIDI is enabled, but RtMidi header was not found."
+#include <RtMidi.h>
 #endif
 #endif
 #ifdef TUXDMX_WITH_COREMIDI
