@@ -34,6 +34,7 @@ constexpr std::uint8_t kEndByte = 0xE7;
 constexpr std::uint8_t kLabelGetWidgetParams = 0x03;
 constexpr std::uint8_t kLabelSetDmx = 0x06;
 constexpr std::uint8_t kLabelGetSerial = 0x0A;
+constexpr char kFtdiPrefix[] = "ftdi:";
 
 std::int64_t nowUnixMs() {
   const auto now = std::chrono::system_clock::now();
@@ -118,6 +119,82 @@ bool configureSerialPort(int fd) {
 }
 
 #else
+using FtStatus = unsigned long;
+using FtHandle = void*;
+using FtUlong = unsigned long;
+using FtUchar = unsigned char;
+using FtUshort = unsigned short;
+
+constexpr FtStatus kFtOk = 0;
+constexpr DWORD kFtOpenBySerialNumber = 1;
+constexpr FtUlong kFtPurgeRx = 1;
+constexpr FtUlong kFtPurgeTx = 2;
+
+struct FtdiApi {
+  HMODULE module = nullptr;
+  bool loadAttempted = false;
+  bool loaded = false;
+
+  FtStatus(__stdcall* createDeviceInfoList)(DWORD*) = nullptr;
+  FtStatus(__stdcall* getDeviceInfoDetail)(DWORD, DWORD*, DWORD*, DWORD*, DWORD*, char*, char*, FtHandle*) = nullptr;
+  FtStatus(__stdcall* open)(int, FtHandle*) = nullptr;
+  FtStatus(__stdcall* openEx)(void*, DWORD, FtHandle*) = nullptr;
+  FtStatus(__stdcall* close)(FtHandle) = nullptr;
+  FtStatus(__stdcall* read)(FtHandle, void*, DWORD, DWORD*) = nullptr;
+  FtStatus(__stdcall* write)(FtHandle, void*, DWORD, DWORD*) = nullptr;
+  FtStatus(__stdcall* setBaudRate)(FtHandle, FtUlong) = nullptr;
+  FtStatus(__stdcall* setDataCharacteristics)(FtHandle, FtUchar, FtUchar, FtUchar) = nullptr;
+  FtStatus(__stdcall* setFlowControl)(FtHandle, FtUshort, FtUchar, FtUchar) = nullptr;
+  FtStatus(__stdcall* setTimeouts)(FtHandle, FtUlong, FtUlong) = nullptr;
+  FtStatus(__stdcall* purge)(FtHandle, FtUlong) = nullptr;
+
+  bool ensureLoaded() {
+    if (loadAttempted) {
+      return loaded;
+    }
+    loadAttempted = true;
+
+    module = LoadLibraryA("ftd2xx.dll");
+    if (module == nullptr) {
+      return false;
+    }
+
+    createDeviceInfoList = reinterpret_cast<decltype(createDeviceInfoList)>(GetProcAddress(module, "FT_CreateDeviceInfoList"));
+    getDeviceInfoDetail = reinterpret_cast<decltype(getDeviceInfoDetail)>(GetProcAddress(module, "FT_GetDeviceInfoDetail"));
+    open = reinterpret_cast<decltype(open)>(GetProcAddress(module, "FT_Open"));
+    openEx = reinterpret_cast<decltype(openEx)>(GetProcAddress(module, "FT_OpenEx"));
+    close = reinterpret_cast<decltype(close)>(GetProcAddress(module, "FT_Close"));
+    read = reinterpret_cast<decltype(read)>(GetProcAddress(module, "FT_Read"));
+    write = reinterpret_cast<decltype(write)>(GetProcAddress(module, "FT_Write"));
+    setBaudRate = reinterpret_cast<decltype(setBaudRate)>(GetProcAddress(module, "FT_SetBaudRate"));
+    setDataCharacteristics =
+        reinterpret_cast<decltype(setDataCharacteristics)>(GetProcAddress(module, "FT_SetDataCharacteristics"));
+    setFlowControl = reinterpret_cast<decltype(setFlowControl)>(GetProcAddress(module, "FT_SetFlowControl"));
+    setTimeouts = reinterpret_cast<decltype(setTimeouts)>(GetProcAddress(module, "FT_SetTimeouts"));
+    purge = reinterpret_cast<decltype(purge)>(GetProcAddress(module, "FT_Purge"));
+
+    loaded = createDeviceInfoList != nullptr && getDeviceInfoDetail != nullptr && open != nullptr && openEx != nullptr
+             && close != nullptr && read != nullptr && write != nullptr && setBaudRate != nullptr
+             && setDataCharacteristics != nullptr && setFlowControl != nullptr && setTimeouts != nullptr && purge != nullptr;
+    return loaded;
+  }
+};
+
+FtdiApi& ftdiApi() {
+  static FtdiApi api;
+  return api;
+}
+
+bool isFtdiEndpoint(std::string_view endpoint) { return toLower(trim(endpoint)).rfind(kFtdiPrefix, 0) == 0; }
+
+std::string ftdiEndpointSerial(std::string_view endpoint) {
+  const std::string text = toLower(trim(endpoint));
+  if (text.rfind(kFtdiPrefix, 0) != 0) {
+    return {};
+  }
+  return trim(std::string(endpoint.substr(std::string_view(kFtdiPrefix).size())));
+}
+
 std::vector<std::string> enumerateWindowsComPortsFromRegistry() {
   std::vector<std::string> ports;
 
@@ -244,6 +321,47 @@ std::vector<std::string> enumerateWindowsComPorts() {
   ports.erase(std::unique(ports.begin(), ports.end()), ports.end());
   return ports;
 }
+
+std::vector<std::string> enumerateWindowsFtdiEndpoints() {
+  std::vector<std::string> endpoints;
+  auto& api = ftdiApi();
+  if (!api.ensureLoaded()) {
+    static bool warnedMissingFtdi = false;
+    if (!warnedMissingFtdi) {
+      warnedMissingFtdi = true;
+      logMessage(LogLevel::Info, "dmx", "FTDI D2XX runtime not found (ftd2xx.dll). FTDI fallback scan disabled.");
+    }
+    return endpoints;
+  }
+
+  DWORD count = 0;
+  if (api.createDeviceInfoList(&count) != kFtOk || count == 0) {
+    return endpoints;
+  }
+
+  for (DWORD i = 0; i < count; ++i) {
+    DWORD flags = 0;
+    DWORD type = 0;
+    DWORD id = 0;
+    DWORD locId = 0;
+    char serial[64] = {};
+    char desc[128] = {};
+    FtHandle tmp = nullptr;
+    const FtStatus rc = api.getDeviceInfoDetail(i, &flags, &type, &id, &locId, serial, desc, &tmp);
+    if (rc != kFtOk) {
+      continue;
+    }
+    const std::string serialText = trim(serial);
+    if (serialText.empty()) {
+      continue;
+    }
+    endpoints.push_back(std::string(kFtdiPrefix) + serialText);
+  }
+
+  std::sort(endpoints.begin(), endpoints.end());
+  endpoints.erase(std::unique(endpoints.begin(), endpoints.end()), endpoints.end());
+  return endpoints;
+}
 #endif
 
 std::string parseSerialHex(const std::vector<std::uint8_t>& payload) {
@@ -358,6 +476,10 @@ std::vector<std::string> EnttecDmxPro::candidatePorts() const {
 
 #ifdef _WIN32
   candidates = enumerateWindowsComPorts();
+  {
+    auto ftdiCandidates = enumerateWindowsFtdiEndpoints();
+    candidates.insert(candidates.end(), ftdiCandidates.begin(), ftdiCandidates.end());
+  }
 #else
   const std::array<std::string, 6> prefixes = {
       "ttyUSB", "ttyACM", "cu.usbserial", "tty.usbserial", "cu.usbmodem", "tty.usbmodem"};
@@ -397,6 +519,17 @@ bool EnttecDmxPro::writeBytes(const std::uint8_t* data, std::size_t size) {
     return false;
   }
 
+  if (usingFtdi_) {
+    auto& api = ftdiApi();
+    if (!api.ensureLoaded()) {
+      return false;
+    }
+    DWORD bytesWritten = 0;
+    const FtStatus rc = api.write(static_cast<FtHandle>(handle_), const_cast<std::uint8_t*>(data), static_cast<DWORD>(size),
+                                  &bytesWritten);
+    return rc == kFtOk && bytesWritten == size;
+  }
+
   DWORD bytesWritten = 0;
   const BOOL ok = WriteFile(static_cast<HANDLE>(handle_), data, static_cast<DWORD>(size), &bytesWritten, nullptr);
   return ok == TRUE && bytesWritten == size;
@@ -427,6 +560,67 @@ bool EnttecDmxPro::readFrame(std::uint8_t expectedLabel, std::vector<std::uint8_
 #ifdef _WIN32
   if (handle_ == nullptr) {
     return false;
+  }
+
+  if (usingFtdi_) {
+    auto& api = ftdiApi();
+    if (!api.ensureLoaded()) {
+      return false;
+    }
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    auto readExact = [&](std::uint8_t* dst, std::size_t len, int chunkTimeoutMs) -> bool {
+      std::size_t offset = 0;
+      while (offset < len && std::chrono::steady_clock::now() < deadline) {
+        const auto remainingMs =
+            static_cast<int>(std::max<std::int64_t>(1, std::chrono::duration_cast<std::chrono::milliseconds>(deadline
+                                                                                                                - std::chrono::steady_clock::now())
+                                                           .count()));
+        api.setTimeouts(static_cast<FtHandle>(handle_), static_cast<FtUlong>(std::min(remainingMs, chunkTimeoutMs)),
+                        static_cast<FtUlong>(std::min(remainingMs, chunkTimeoutMs)));
+        DWORD got = 0;
+        const FtStatus rc = api.read(static_cast<FtHandle>(handle_), dst + offset, static_cast<DWORD>(len - offset), &got);
+        if (rc != kFtOk) {
+          return false;
+        }
+        if (got == 0) {
+          continue;
+        }
+        offset += static_cast<std::size_t>(got);
+      }
+      return offset == len;
+    };
+
+    std::uint8_t start = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (!readExact(&start, 1, 25)) {
+        continue;
+      }
+      if (start == kStartByte) {
+        break;
+      }
+    }
+    if (start != kStartByte) {
+      return false;
+    }
+
+    std::array<std::uint8_t, 3> header{};
+    if (!readExact(header.data(), header.size(), timeoutMs)) {
+      return false;
+    }
+
+    const auto label = header[0];
+    const auto length = static_cast<std::size_t>(header[1] | (header[2] << 8U));
+    payload.resize(length);
+    if (length > 0 && !readExact(payload.data(), length, timeoutMs)) {
+      return false;
+    }
+
+    std::uint8_t end = 0;
+    if (!readExact(&end, 1, timeoutMs) || end != kEndByte) {
+      return false;
+    }
+    return label == expectedLabel;
   }
 
   auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
@@ -523,6 +717,50 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   }
 
 #ifdef _WIN32
+  if (isFtdiEndpoint(port)) {
+    auto& api = ftdiApi();
+    if (!api.ensureLoaded()) {
+      errorCode = ERROR_MOD_NOT_FOUND;
+      error = "ftd2xx.dll not available";
+      return false;
+    }
+
+    const std::string serialKey = ftdiEndpointSerial(port);
+    if (serialKey.empty()) {
+      errorCode = ERROR_INVALID_PARAMETER;
+      error = "Invalid FTDI endpoint";
+      return false;
+    }
+
+    FtHandle ftHandle = nullptr;
+    std::string serialArg = serialKey;
+    const FtStatus openRc = api.openEx(const_cast<char*>(serialArg.c_str()), kFtOpenBySerialNumber, &ftHandle);
+    if (openRc != kFtOk || ftHandle == nullptr) {
+      errorCode = static_cast<int>(openRc);
+      error = "FTDI open failed";
+      return false;
+    }
+
+    api.setBaudRate(ftHandle, 57600);
+    api.setDataCharacteristics(ftHandle, 8, 0, 0);
+    api.setFlowControl(ftHandle, 0, 0, 0);
+    api.setTimeouts(ftHandle, static_cast<FtUlong>(std::max(20, serialReadTimeoutMs)),
+                    static_cast<FtUlong>(std::max(20, serialReadTimeoutMs)));
+    api.purge(ftHandle, kFtPurgeRx | kFtPurgeTx);
+
+    {
+      std::scoped_lock lock(mutex_);
+      if (handle_ != nullptr) {
+        if (usingFtdi_) {
+          api.close(static_cast<FtHandle>(handle_));
+        } else {
+          CloseHandle(static_cast<HANDLE>(handle_));
+        }
+      }
+      handle_ = ftHandle;
+      usingFtdi_ = true;
+    }
+  } else {
   const std::string path = "\\\\.\\" + port;
   HANDLE handle = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
   if (handle == INVALID_HANDLE_VALUE) {
@@ -562,9 +800,18 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   {
     std::scoped_lock lock(mutex_);
     if (handle_ != nullptr) {
-      CloseHandle(static_cast<HANDLE>(handle_));
+      if (usingFtdi_) {
+        auto& api = ftdiApi();
+        if (api.ensureLoaded()) {
+          api.close(static_cast<FtHandle>(handle_));
+        }
+      } else {
+        CloseHandle(static_cast<HANDLE>(handle_));
+      }
     }
     handle_ = handle;
+    usingFtdi_ = false;
+  }
   }
 #else
   const int fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
@@ -827,8 +1074,16 @@ void EnttecDmxPro::disconnect() {
 
 #ifdef _WIN32
   if (handle_ != nullptr) {
-    CloseHandle(static_cast<HANDLE>(handle_));
+    if (usingFtdi_) {
+      auto& api = ftdiApi();
+      if (api.ensureLoaded()) {
+        api.close(static_cast<FtHandle>(handle_));
+      }
+    } else {
+      CloseHandle(static_cast<HANDLE>(handle_));
+    }
     handle_ = nullptr;
+    usingFtdi_ = false;
   }
 #else
   if (fd_ >= 0) {
@@ -891,8 +1146,16 @@ bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
     status_.transportState = "degraded";
 #ifdef _WIN32
     if (handle_ != nullptr) {
-      CloseHandle(static_cast<HANDLE>(handle_));
+      if (usingFtdi_) {
+        auto& api = ftdiApi();
+        if (api.ensureLoaded()) {
+          api.close(static_cast<FtHandle>(handle_));
+        }
+      } else {
+        CloseHandle(static_cast<HANDLE>(handle_));
+      }
       handle_ = nullptr;
+      usingFtdi_ = false;
     }
 #else
     if (fd_ >= 0) {

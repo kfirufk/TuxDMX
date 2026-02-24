@@ -64,6 +64,7 @@ class EnttecDmxPro final : public DmxOutputBackend {
 
 #ifdef _WIN32
   void* handle_ = nullptr;
+  bool usingFtdi_ = false;
 #else
   int fd_ = -1;
 #endif
