@@ -118,6 +118,57 @@ bool configureSerialPort(int fd) {
 }
 
 #else
+std::vector<std::string> enumerateWindowsComPortsFromRegistry() {
+  std::vector<std::string> ports;
+
+  HKEY key = nullptr;
+  if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DEVICEMAP\\SERIALCOMM", 0, KEY_READ, &key) != ERROR_SUCCESS) {
+    return ports;
+  }
+
+  DWORD valueCount = 0;
+  DWORD maxValueNameLen = 0;
+  DWORD maxValueLen = 0;
+  if (RegQueryInfoKeyA(key, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &valueCount, &maxValueNameLen, &maxValueLen,
+                       nullptr, nullptr) != ERROR_SUCCESS) {
+    RegCloseKey(key);
+    return ports;
+  }
+
+  std::vector<char> valueName(maxValueNameLen + 2, '\0');
+  std::vector<std::uint8_t> valueData(maxValueLen + 2, 0);
+
+  for (DWORD index = 0; index < valueCount; ++index) {
+    DWORD valueNameLen = static_cast<DWORD>(valueName.size() - 1);
+    DWORD valueLen = static_cast<DWORD>(valueData.size());
+    DWORD type = 0;
+    const LONG rc = RegEnumValueA(key, index, valueName.data(), &valueNameLen, nullptr, &type, valueData.data(), &valueLen);
+    if (rc != ERROR_SUCCESS) {
+      continue;
+    }
+    if (type != REG_SZ && type != REG_EXPAND_SZ) {
+      continue;
+    }
+    if (valueLen == 0) {
+      continue;
+    }
+
+    const char* raw = reinterpret_cast<const char*>(valueData.data());
+    const std::string port = trim(raw);
+    if (port.empty()) {
+      continue;
+    }
+    if (toLower(port).rfind("com", 0) == 0) {
+      ports.push_back(port);
+    }
+  }
+
+  RegCloseKey(key);
+  std::sort(ports.begin(), ports.end());
+  ports.erase(std::unique(ports.begin(), ports.end()), ports.end());
+  return ports;
+}
+
 std::vector<std::string> enumerateWindowsComPorts() {
   std::vector<std::string> ports;
 
@@ -171,6 +222,12 @@ std::vector<std::string> enumerateWindowsComPorts() {
 
   std::sort(ports.begin(), ports.end());
   ports.erase(std::unique(ports.begin(), ports.end()), ports.end());
+
+  // Add registry-reported serial ports (can include devices not surfaced by SetupAPI path).
+  {
+    auto regPorts = enumerateWindowsComPortsFromRegistry();
+    ports.insert(ports.end(), regPorts.begin(), regPorts.end());
+  }
 
   // Fallback/augmentation for environments where SetupAPI class enumeration
   // misses some serial devices. Query DOS namespace for COM1..COM256.
@@ -580,9 +637,26 @@ void EnttecDmxPro::refreshDevicesUnlocked(std::string& error) {
 
   const auto ports = candidatePorts();
   if (ports.empty()) {
+    logMessage(LogLevel::Warn, "dmx", "ENTTEC scan found 0 candidate serial ports");
+  } else {
+    std::string joined;
+    for (std::size_t i = 0; i < ports.size(); ++i) {
+      if (i > 0) {
+        joined += ", ";
+      }
+      joined += ports[i];
+    }
+    logMessage(LogLevel::Info, "dmx",
+               "ENTTEC scan candidates (" + std::to_string(ports.size()) + "): " + joined);
+  }
+  if (ports.empty()) {
     std::scoped_lock lock(mutex_);
     devices_.clear();
+#ifdef _WIN32
+    error = "No candidate serial ports found (check FTDI/USB driver exposes a COM port)";
+#else
     error = "No candidate serial ports found";
+#endif
     return;
   }
 
@@ -606,6 +680,10 @@ void EnttecDmxPro::refreshDevicesUnlocked(std::string& error) {
       disconnect();
       continue;
     }
+
+    logMessage(LogLevel::Warn, "dmx",
+               "Probe failed on " + port + ": " + (probeError.empty() ? std::string("unknown") : probeError)
+                   + (probeCode != 0 ? " (code " + std::to_string(probeCode) + ")" : ""));
 
     if (firstProbeError.empty() && !probeError.empty()) {
       firstProbeError = probeError;
