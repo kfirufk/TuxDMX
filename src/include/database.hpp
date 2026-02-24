@@ -22,6 +22,8 @@ class Database {
   bool initialize(std::string& error);
 
   int createTemplate(const std::string& name, const std::string& description, std::string& error);
+  bool resetTemplateDefinition(int templateId, const std::string& name, const std::string& description,
+                               std::string& error);
   int addTemplateChannel(int templateId, int channelIndex, const std::string& name, const std::string& kind,
                          int defaultValue, std::string& error);
   int addChannelRange(int channelId, int startValue, int endValue, const std::string& label, std::string& error);

@@ -290,6 +290,15 @@
         </div>
 
         <form id="template-form" class="stack-form">
+          <div class="template-edit-toolbar">
+            <label>
+              Edit Existing Template
+              <select id="template-edit-select"></select>
+            </label>
+            <button type="button" id="template-new-btn" class="btn ghost">New Template</button>
+          </div>
+          <p id="template-edit-status" class="template-edit-status">Mode: create new template</p>
+
           <label>
             Template Name
             <input type="text" name="name" required placeholder="AliExpress 60x3W RGB PAR">
@@ -311,7 +320,7 @@
 
           <div id="channel-editor-list" class="channel-editor-list"></div>
 
-          <button type="submit" class="btn primary">Save Template</button>
+          <button type="submit" id="template-submit-btn" class="btn primary">Save Template</button>
         </form>
       </article>
     </section>

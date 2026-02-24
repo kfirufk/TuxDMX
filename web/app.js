@@ -65,6 +65,7 @@ const state = {
   controlMode: 'slider',
   compactMode: false,
   hideMidiMode: false,
+  templateEditingId: null,
   autoRefreshPauseUntil: 0,
   refreshTimer: null,
   toastTimer: null,
@@ -134,6 +135,10 @@ const els = {
   refreshBtn: document.getElementById('refresh-btn'),
   audioToggle: document.getElementById('audio-toggle'),
   templateForm: document.getElementById('template-form'),
+  templateEditSelect: document.getElementById('template-edit-select'),
+  templateNewBtn: document.getElementById('template-new-btn'),
+  templateEditStatus: document.getElementById('template-edit-status'),
+  templateSubmitBtn: document.getElementById('template-submit-btn'),
   templateExportBtn: document.getElementById('template-export-btn'),
   templateImportBtn: document.getElementById('template-import-btn'),
   templateImportFile: document.getElementById('template-import-file'),
@@ -1138,6 +1143,115 @@ function generateBlankChannels() {
   }
 }
 
+function templateById(templateId) {
+  const wanted = Number(templateId || 0);
+  if (wanted <= 0) return null;
+  return state.templates.find((template) => Number(template.id) === wanted) || null;
+}
+
+function syncTemplateEditorUi() {
+  const editingTemplate = templateById(state.templateEditingId);
+
+  if (els.templateEditSelect) {
+    const nextValue = editingTemplate ? String(editingTemplate.id) : '';
+    if (els.templateEditSelect.value !== nextValue) {
+      els.templateEditSelect.value = nextValue;
+    }
+  }
+
+  if (els.templateEditStatus) {
+    els.templateEditStatus.textContent = editingTemplate
+      ? `Mode: editing "${editingTemplate.name}"`
+      : 'Mode: create new template';
+  }
+
+  if (els.templateSubmitBtn) {
+    els.templateSubmitBtn.textContent = editingTemplate ? 'Update Template' : 'Save Template';
+  }
+}
+
+function resetTemplateEditorToCreateMode() {
+  state.templateEditingId = null;
+  els.templateForm.reset();
+  els.channelEditorList.innerHTML = '';
+  els.channelEditorList.appendChild(makeChannelRow());
+  syncTemplateEditorUi();
+}
+
+function loadTemplateIntoEditor(templateId, { switchToTemplatesView = true } = {}) {
+  const template = templateById(templateId);
+  if (!template) {
+    showToast('Template not found', 'error');
+    return;
+  }
+
+  if (switchToTemplatesView) {
+    setActiveView('templates');
+  }
+
+  state.templateEditingId = Number(template.id);
+  els.templateForm.elements.name.value = template.name || '';
+  els.templateForm.elements.description.value = template.description || '';
+  els.channelEditorList.innerHTML = '';
+
+  const channels = [...(template.channels || [])]
+    .sort((a, b) => Number(a.channelIndex || 0) - Number(b.channelIndex || 0));
+
+  if (!channels.length) {
+    els.channelEditorList.appendChild(makeChannelRow());
+  } else {
+    channels.forEach((channel) => {
+      els.channelEditorList.appendChild(makeChannelRow({
+        channelIndex: Number(channel.channelIndex || 1),
+        name: channel.name || '',
+        kind: channel.kind || 'generic',
+        defaultValue: Number(channel.defaultValue || 0),
+        ranges: (channel.ranges || []).map((range) => ({
+          startValue: Number(range.startValue ?? range.start_value ?? 0),
+          endValue: Number(range.endValue ?? range.end_value ?? 255),
+          label: range.label || '',
+        })),
+      }));
+    });
+  }
+
+  els.quickChannelCount.value = String(Math.max(1, channels.length || Number(template.footprintChannels || 1)));
+  pauseAutoRefreshForEditing(7000);
+  syncTemplateEditorUi();
+}
+
+function refreshTemplateEditSelect(templates) {
+  if (!els.templateEditSelect) return;
+
+  const previousValue = Number(els.templateEditSelect.value || 0);
+  const options = Array.isArray(templates) ? templates : [];
+
+  els.templateEditSelect.innerHTML = '';
+  const createOption = document.createElement('option');
+  createOption.value = '';
+  createOption.textContent = 'Create new template';
+  els.templateEditSelect.appendChild(createOption);
+
+  options.forEach((template) => {
+    const option = document.createElement('option');
+    option.value = String(template.id);
+    option.textContent = `${template.name} (${template.footprintChannels}ch)`;
+    els.templateEditSelect.appendChild(option);
+  });
+
+  const preferredValue = Number(state.templateEditingId || previousValue || 0);
+  const exists = options.some((template) => Number(template.id) === preferredValue);
+  if (exists) {
+    els.templateEditSelect.value = String(preferredValue);
+    state.templateEditingId = preferredValue;
+  } else {
+    if (state.templateEditingId) {
+      state.templateEditingId = null;
+    }
+    els.templateEditSelect.value = '';
+  }
+}
+
 function selectedLearnFixture() {
   const fixtureId = Number(els.learnFixtureSelect.value || 0);
   return state.fixtures.find((fixture) => fixture.id === fixtureId) || null;
@@ -1263,6 +1377,8 @@ function renderTemplates(templates) {
     option.value = '';
     option.textContent = 'No templates yet';
     els.fixtureTemplateSelect.appendChild(option);
+    refreshTemplateEditSelect([]);
+    syncTemplateEditorUi();
     updatePatchRangePreview();
     return;
   }
@@ -1275,10 +1391,27 @@ function renderTemplates(templates) {
 
     const pill = document.createElement('div');
     pill.className = 'template-pill';
-    pill.innerHTML = `
-      <strong>${escapeHtml(template.name)}</strong>
-      <p>${template.footprintChannels} channels • ${escapeHtml(template.description || 'No description')}</p>
-    `;
+
+    const pillHead = document.createElement('div');
+    pillHead.className = 'template-pill-head';
+
+    const title = document.createElement('strong');
+    title.textContent = template.name;
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'btn ghost btn-mini';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => {
+      loadTemplateIntoEditor(template.id, { switchToTemplatesView: true });
+    });
+
+    pillHead.append(title, editBtn);
+
+    const meta = document.createElement('p');
+    meta.textContent = `${template.footprintChannels} channels • ${template.description || 'No description'}`;
+
+    pill.append(pillHead, meta);
     els.templateList.appendChild(pill);
   });
 
@@ -1287,6 +1420,8 @@ function renderTemplates(templates) {
     : String(templates[0].id);
   els.fixtureTemplateSelect.value = preferredTemplateValue;
 
+  refreshTemplateEditSelect(templates);
+  syncTemplateEditorUi();
   updatePatchRangePreview();
 }
 
@@ -2267,14 +2402,61 @@ async function onTemplateSubmit(event) {
     return;
   }
 
+  const seenChannels = new Set();
   for (const channel of channels) {
-    if (!channel.name || !Number.isFinite(channel.channel_index) || channel.channel_index < 1) {
+    const channelIndex = Number(channel.channel_index);
+    if (!channel.name || !Number.isFinite(channelIndex) || channelIndex < 1) {
       showToast('Each channel needs a valid index and name', 'error');
       return;
     }
+    if (seenChannels.has(channelIndex)) {
+      showToast(`Duplicate channel number CH${channelIndex}`, 'error');
+      return;
+    }
+    seenChannels.add(channelIndex);
   }
 
+  const sortedChannels = [...channels].sort((a, b) => Number(a.channel_index) - Number(b.channel_index));
+  const editingTemplateId = Number(state.templateEditingId || 0);
+
   try {
+    pauseAutoRefreshForEditing(7000);
+
+    if (editingTemplateId > 0) {
+      await api(`/api/templates/${editingTemplateId}/replace`, {
+        method: 'POST',
+        body: { name, description },
+      });
+
+      for (const channel of sortedChannels) {
+        const channelResp = await api(`/api/templates/${editingTemplateId}/channels`, {
+          method: 'POST',
+          body: {
+            channel_index: String(channel.channel_index),
+            name: channel.name,
+            kind: channel.kind,
+            default_value: String(channel.default_value || 0),
+          },
+        });
+
+        for (const range of channel.ranges) {
+          await api(`/api/channels/${channelResp.channelId}/ranges`, {
+            method: 'POST',
+            body: {
+              start_value: String(range.start_value),
+              end_value: String(range.end_value),
+              label: range.label,
+            },
+          });
+        }
+      }
+
+      await loadState({ silent: true });
+      loadTemplateIntoEditor(editingTemplateId, { switchToTemplatesView: false });
+      showToast(`Template "${name}" updated`);
+      return;
+    }
+
     const templateResp = await api('/api/templates', {
       method: 'POST',
       body: { name, description },
@@ -2282,7 +2464,7 @@ async function onTemplateSubmit(event) {
 
     const templateId = templateResp.templateId;
 
-    for (const channel of channels) {
+    for (const channel of sortedChannels) {
       const channelResp = await api(`/api/templates/${templateId}/channels`, {
         method: 'POST',
         body: {
@@ -2306,9 +2488,7 @@ async function onTemplateSubmit(event) {
     }
 
     showToast(`Template "${name}" saved`);
-    els.templateForm.reset();
-    els.channelEditorList.innerHTML = '';
-    els.channelEditorList.appendChild(makeChannelRow());
+    resetTemplateEditorToCreateMode();
     await loadState({ silent: true });
   } catch (err) {
     showToast(err.message, 'error');
@@ -2866,6 +3046,21 @@ function installEventListeners() {
     els.channelEditorList.appendChild(makeChannelRow());
   });
   els.generateChannelsBtn.addEventListener('click', generateBlankChannels);
+  if (els.templateEditSelect) {
+    els.templateEditSelect.addEventListener('change', () => {
+      const templateId = Number(els.templateEditSelect.value || 0);
+      if (templateId > 0) {
+        loadTemplateIntoEditor(templateId, { switchToTemplatesView: false });
+      } else {
+        resetTemplateEditorToCreateMode();
+      }
+    });
+  }
+  if (els.templateNewBtn) {
+    els.templateNewBtn.addEventListener('click', () => {
+      resetTemplateEditorToCreateMode();
+    });
+  }
 
   els.fixtureTemplateSelect.addEventListener('change', updatePatchRangePreview);
   els.fixtureStartAddress.addEventListener('input', updatePatchRangePreview);

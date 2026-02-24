@@ -1739,6 +1739,32 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
   }
 
   if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "templates" &&
+      segments[3] == "replace") {
+    int templateId = 0;
+    if (!parseInt(segments[2], templateId)) {
+      return jsonError(400, "Invalid template id");
+    }
+
+    auto form = parseFormEncoded(request.body);
+    auto nameIt = form.find("name");
+    if (nameIt == form.end() || trim(nameIt->second).empty()) {
+      return jsonError(422, "Template name is required");
+    }
+    const auto descriptionIt = form.find("description");
+    const std::string description = descriptionIt == form.end() ? "" : trim(descriptionIt->second);
+
+    std::string error;
+    if (!db_.resetTemplateDefinition(templateId, trim(nameIt->second), description, error)) {
+      if (error.find("UNIQUE") != std::string::npos) {
+        return jsonError(409, "Template name already exists");
+      }
+      return jsonError(422, error);
+    }
+
+    return jsonOk("{\"ok\":true}");
+  }
+
+  if (request.method == "POST" && segments.size() == 4 && segments[0] == "api" && segments[1] == "templates" &&
       segments[3] == "channels") {
     int templateId = 0;
     if (!parseInt(segments[2], templateId)) {

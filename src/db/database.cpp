@@ -572,6 +572,59 @@ int Database::createTemplate(const std::string& name, const std::string& descrip
   return static_cast<int>(sqlite3_last_insert_rowid(db_));
 }
 
+bool Database::resetTemplateDefinition(int templateId, const std::string& name, const std::string& description,
+                                       std::string& error) {
+  std::scoped_lock lock(mutex_);
+
+  error.clear();
+  if (!beginTransaction(error)) {
+    return false;
+  }
+
+  Statement updateStmt;
+  if (!prepare(db_, "UPDATE fixture_templates SET name = ?, description = ?, footprint_channels = 0 WHERE id = ?;",
+               updateStmt, error)) {
+    rollbackTransaction();
+    return false;
+  }
+
+  sqlite3_bind_text(updateStmt.stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(updateStmt.stmt, 2, description.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(updateStmt.stmt, 3, templateId);
+
+  if (sqlite3_step(updateStmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    rollbackTransaction();
+    return false;
+  }
+
+  if (sqlite3_changes(db_) == 0) {
+    error = "Template not found";
+    rollbackTransaction();
+    return false;
+  }
+
+  Statement clearStmt;
+  if (!prepare(db_, "DELETE FROM template_channels WHERE template_id = ?;", clearStmt, error)) {
+    rollbackTransaction();
+    return false;
+  }
+
+  sqlite3_bind_int(clearStmt.stmt, 1, templateId);
+  if (sqlite3_step(clearStmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    rollbackTransaction();
+    return false;
+  }
+
+  if (!commitTransaction(error)) {
+    rollbackTransaction();
+    return false;
+  }
+
+  return true;
+}
+
 int Database::addTemplateChannel(int templateId, int channelIndex, const std::string& name, const std::string& kind,
                                  int defaultValue, std::string& error) {
   std::scoped_lock lock(mutex_);

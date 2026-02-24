@@ -520,6 +520,20 @@ textarea {
   margin-bottom: 0.75rem;
 }
 
+.template-edit-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.58rem;
+  align-items: end;
+}
+
+.template-edit-status {
+  margin: -0.15rem 0 0.1rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+
 .inline-head {
   display: flex;
   justify-content: space-between;
@@ -630,6 +644,13 @@ textarea {
   border-radius: 10px;
   padding: 0.55rem 0.65rem;
   background: rgba(255, 255, 255, 0.9);
+}
+
+.template-pill-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
 }
 
 .template-pill strong {
@@ -1256,6 +1277,10 @@ body.layout-compact .channel-title-text {
 
   .range-row .btn {
     grid-column: 1 / -1;
+  }
+
+  .template-edit-toolbar {
+    grid-template-columns: 1fr;
   }
 }
 
