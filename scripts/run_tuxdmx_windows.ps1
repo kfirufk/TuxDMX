@@ -37,6 +37,14 @@ function Normalize-PathForCMake {
   return ($PathValue -replace "\\", "/")
 }
 
+function Looks-Like-VsBundledVcpkgRoot {
+  param([string]$PathValue)
+  if ([string]::IsNullOrWhiteSpace($PathValue)) {
+    return $false
+  }
+  return ($PathValue -match "Microsoft Visual Studio[\\/].+[\\/]VC[\\/]vcpkg")
+}
+
 function Invoke-NativeLogged {
   param(
     [Parameter(Mandatory = $true)][string]$Command,
@@ -185,6 +193,12 @@ if (Command-Exists "cl.exe") {
 
 # Try to infer vcpkg root and toolchain automatically.
 $vcpkgRoot = $env:VCPKG_ROOT
+if (Looks-Like-VsBundledVcpkgRoot -PathValue $vcpkgRoot) {
+  # Prefer standalone vcpkg over VS bundled vcpkg for consistent package installs.
+  $warnings.Add("Ignoring VS bundled VCPKG_ROOT=$vcpkgRoot")
+  $vcpkgRoot = ""
+}
+
 if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
   if (Test-Path "C:\vcpkg\vcpkg.exe") {
     $vcpkgRoot = "C:\vcpkg"
@@ -197,6 +211,18 @@ if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
   if (-not [string]::IsNullOrWhiteSpace($vcpkgRoot)) {
     $env:VCPKG_ROOT = $vcpkgRoot
     $warnings.Add("Auto-detected VCPKG_ROOT=$vcpkgRoot")
+  }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($vcpkgRoot)) {
+  $vcpkgRootResolved = (Resolve-Path $vcpkgRoot -ErrorAction SilentlyContinue)
+  if ($vcpkgRootResolved) {
+    $vcpkgRoot = $vcpkgRootResolved.Path
+    $env:VCPKG_ROOT = $vcpkgRoot
+  }
+  if ($env:Path -notlike "*$vcpkgRoot*") {
+    $env:Path = "$vcpkgRoot;$env:Path"
+    $warnings.Add("Temporarily added vcpkg to PATH for this run")
   }
 }
 
