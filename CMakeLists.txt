@@ -9,7 +9,15 @@ option(TUXDMX_ENABLE_TESTS "Build tuxdmx tests" ON)
 option(TUXDMX_ENABLE_PORTAUDIO "Enable real microphone input via PortAudio" ON)
 option(TUXDMX_ENABLE_RTMIDI "Enable server-side MIDI input via RtMidi" ON)
 
-find_package(SQLite3 REQUIRED)
+find_package(SQLite3 QUIET)
+set(TUXDMX_SQLITE_TARGET "")
+if(SQLite3_FOUND)
+  set(TUXDMX_SQLITE_TARGET SQLite::SQLite3)
+else()
+  # vcpkg on Windows commonly exposes sqlite as unofficial-sqlite3.
+  find_package(unofficial-sqlite3 CONFIG REQUIRED)
+  set(TUXDMX_SQLITE_TARGET unofficial::sqlite3::sqlite3)
+endif()
 find_package(Threads REQUIRED)
 find_package(PkgConfig QUIET)
 
@@ -30,7 +38,7 @@ add_executable(tuxdmx ${TUXDMX_SOURCES})
 
 target_include_directories(tuxdmx PRIVATE src/include)
 
-target_link_libraries(tuxdmx PRIVATE SQLite::SQLite3 Threads::Threads)
+target_link_libraries(tuxdmx PRIVATE ${TUXDMX_SQLITE_TARGET} Threads::Threads)
 
 target_compile_definitions(tuxdmx PRIVATE TUXDMX_DEFAULT_WEB_ROOT="${CMAKE_SOURCE_DIR}/web")
 
@@ -63,7 +71,7 @@ if(TUXDMX_ENABLE_TESTS)
   enable_testing()
   add_executable(tuxdmx_db_tests tests/test_database.cpp src/db/database.cpp)
   target_include_directories(tuxdmx_db_tests PRIVATE src/include)
-  target_link_libraries(tuxdmx_db_tests PRIVATE SQLite::SQLite3)
+  target_link_libraries(tuxdmx_db_tests PRIVATE ${TUXDMX_SQLITE_TARGET})
   add_test(NAME tuxdmx_db_tests COMMAND tuxdmx_db_tests)
 
   add_executable(tuxdmx_dmx_engine_tests
