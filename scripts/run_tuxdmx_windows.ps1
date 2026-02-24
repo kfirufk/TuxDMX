@@ -37,8 +37,16 @@ function Invoke-NativeLogged {
 
   $previousErrorAction = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
+  $capturedLines = New-Object System.Collections.Generic.List[object]
   try {
-    $allLines = & $Command @Arguments 2>&1 | Tee-Object -Variable capturedLines
+    & $Command @Arguments 2>&1 | ForEach-Object {
+      $capturedLines.Add($_)
+      if ($_ -is [System.Management.Automation.ErrorRecord]) {
+        Write-Host ($_.ToString()) -ForegroundColor Red
+      } else {
+        Write-Host "$_"
+      }
+    }
     $exitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousErrorAction
@@ -46,8 +54,7 @@ function Invoke-NativeLogged {
 
   return @{
     ExitCode = $exitCode
-    Lines = @($capturedLines)
-    Output = $allLines
+    Lines = @($capturedLines.ToArray())
   }
 }
 
