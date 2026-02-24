@@ -50,10 +50,22 @@ struct FixtureGroup {
   std::vector<int> fixtureIds;
 };
 
+struct DmxOutputDevice {
+  std::string id;
+  std::string name;
+  std::string endpoint;
+  std::string serial;
+  int firmwareMajor = 0;
+  int firmwareMinor = 0;
+  bool connected = false;
+};
+
 struct DmxDeviceStatus {
   std::string backend = "unknown";
   bool connected = false;
   std::string endpoint;
+  std::string activeDeviceId;
+  std::string preferredDeviceId;
   std::string port;
   std::string serial;
   int firmwareMajor = 0;

@@ -22,6 +22,10 @@ Implement a class derived from `DmxOutputBackend`:
 - `sendUniverse(...)`: transmit one 512-channel frame.
 - `setWriteRetryLimit(...)`: support runtime retry tuning from UI/API.
 - `writeRetryLimit()`: return current limit.
+- `devices()`: return current discovered output-device candidates.
+- `refreshDevices()`: refresh candidate cache (typically while disconnected).
+- `setPreferredDeviceId(...)`: set auto/manual selection target (empty = auto).
+- `preferredDeviceId()`: return current preferred target id.
 - `status()`: return the backend status snapshot.
 
 ## Status Semantics
@@ -31,6 +35,8 @@ Populate `DmxDeviceStatus` consistently:
 - `backend`: backend id string (required).
 - `connected`: transport connection state.
 - `endpoint`: best endpoint string for the backend (`COM4`, `/dev/ttyUSB0`, `192.168.1.50:6454`, etc.).
+- `activeDeviceId`: currently connected candidate id when available.
+- `preferredDeviceId`: user-selected target id (empty means auto-select).
 - `lastError`: human-readable last transport error.
 - `writeRetryLimit` and `consecutiveWriteFailures`: used by UI and diagnostics.
 - `port`, `serial`, `firmwareMajor`, `firmwareMinor`: optional legacy/hardware fields. Set when meaningful.
@@ -67,6 +73,10 @@ class MyBackend final : public tuxdmx::DmxOutputBackend {
   bool sendUniverse(const std::array<std::uint8_t, 512>& channels) override;
   void setWriteRetryLimit(int limit) override;
   int writeRetryLimit() const override;
+  std::vector<tuxdmx::DmxOutputDevice> devices() const override;
+  void refreshDevices() override;
+  void setPreferredDeviceId(std::string deviceId) override;
+  std::string preferredDeviceId() const override;
   tuxdmx::DmxDeviceStatus status() const override;
 };
 ```

@@ -77,6 +77,10 @@ const els = {
   deviceStatus: document.getElementById('device-status'),
   devicePort: document.getElementById('device-port'),
   deviceSerial: document.getElementById('device-serial'),
+  dmxDeviceSelect: document.getElementById('dmx-device-select'),
+  applyDmxDeviceBtn: document.getElementById('apply-dmx-device-btn'),
+  scanDmxDevicesBtn: document.getElementById('scan-dmx-devices-btn'),
+  dmxDeviceLabel: document.getElementById('dmx-device-label'),
   deviceFw: document.getElementById('device-fw'),
   dmxRetryLimit: document.getElementById('dmx-retry-limit'),
   applyDmxRetryBtn: document.getElementById('apply-dmx-retry-btn'),
@@ -288,6 +292,7 @@ function iconBadge(kindOrLabel, byLabel = false) {
 const LAYOUT_STORAGE_KEY = 'tuxdmx.layout.v1';
 const MIDI_REACTIVE_CONTROL_ID = 'audio:reactive';
 const PERFORMANCE_STORAGE_KEY = 'tuxdmx.performance.v1';
+const DMX_DEVICE_AUTO_VALUE = '__auto__';
 
 function midiInputNameById(inputId) {
   const input = (state.midi.inputs || []).find((item) => item.id === inputId);
@@ -1432,17 +1437,87 @@ function renderStatus(dmx, audio, midi = null) {
     syncMidiStateFromServer(midi);
   }
 
+  const dmxBackend = String(dmx.backend || 'dmx');
+  const dmxDevices = Array.isArray(dmx.devices) ? dmx.devices : [];
+  const preferredDeviceId = String(dmx.preferredDeviceId || '');
+  const activeDeviceId = String(dmx.activeDeviceId || '');
+
   if (dmx.connected) {
-    els.deviceStatus.textContent = 'ENTTEC DMX USB Pro detected';
+    const connectedText = dmx.serial
+      ? `${dmxBackend} connected (${dmx.serial})`
+      : `${dmxBackend} connected`;
+    els.deviceStatus.textContent = connectedText;
     els.deviceStatus.style.color = '#0b7266';
   } else {
     els.deviceStatus.textContent = `Device not connected. ${dmx.lastError || ''}`.trim();
     els.deviceStatus.style.color = '#b7432b';
   }
 
-  els.devicePort.textContent = `Port: ${dmx.port || '--'}`;
+  const endpointText = dmx.endpoint || dmx.port || '--';
+  els.devicePort.textContent = `Endpoint: ${endpointText}`;
   els.deviceSerial.textContent = `Serial: ${dmx.serial || '--'}`;
   els.deviceFw.textContent = `Firmware: ${dmx.firmwareMajor}.${dmx.firmwareMinor}`;
+  if (els.dmxDeviceSelect) {
+    const previousChoice = String(els.dmxDeviceSelect.value || '');
+    const byId = new Map(
+      dmxDevices
+        .map((device) => ({
+          id: String(device.id || ''),
+          name: String(device.name || ''),
+          endpoint: String(device.endpoint || ''),
+          connected: Boolean(device.connected),
+        }))
+        .filter((device) => device.id),
+    );
+
+    els.dmxDeviceSelect.innerHTML = '';
+    const autoOption = document.createElement('option');
+    autoOption.value = DMX_DEVICE_AUTO_VALUE;
+    autoOption.textContent = `Auto Select (${dmxBackend})`;
+    els.dmxDeviceSelect.appendChild(autoOption);
+
+    dmxDevices.forEach((device) => {
+      const option = document.createElement('option');
+      const deviceId = String(device.id || '');
+      const deviceName = String(device.name || device.endpoint || device.id || 'Unknown DMX device');
+      option.value = deviceId;
+      option.textContent = `${deviceName}${device.connected ? ' • connected' : ''}`;
+      if (deviceId) {
+        els.dmxDeviceSelect.appendChild(option);
+      }
+    });
+
+    const hasPreviousChoice = previousChoice === DMX_DEVICE_AUTO_VALUE || byId.has(previousChoice);
+    const serverChoice = preferredDeviceId ? preferredDeviceId : DMX_DEVICE_AUTO_VALUE;
+    const uiChoice = hasPreviousChoice ? previousChoice : serverChoice;
+    const hasUiChoice = uiChoice === DMX_DEVICE_AUTO_VALUE || byId.has(uiChoice);
+    els.dmxDeviceSelect.value = hasUiChoice ? uiChoice : serverChoice;
+
+    if (els.applyDmxDeviceBtn) {
+      const selectedValue = String(els.dmxDeviceSelect.value || DMX_DEVICE_AUTO_VALUE);
+      const canApply = selectedValue === DMX_DEVICE_AUTO_VALUE || byId.has(selectedValue);
+      els.applyDmxDeviceBtn.disabled = !canApply;
+    }
+
+    if (els.scanDmxDevicesBtn) {
+      els.scanDmxDevicesBtn.disabled = false;
+    }
+
+    if (els.dmxDeviceLabel) {
+      const preferredLabel = preferredDeviceId
+        ? (byId.get(preferredDeviceId)?.name || preferredDeviceId)
+        : 'Auto';
+      const activeLabel = activeDeviceId
+        ? (byId.get(activeDeviceId)?.name || activeDeviceId)
+        : 'None';
+      const pendingId = String(els.dmxDeviceSelect.value || DMX_DEVICE_AUTO_VALUE);
+      const pendingLabel = pendingId === serverChoice
+        ? ''
+        : ` • Pending: ${pendingId === DMX_DEVICE_AUTO_VALUE ? 'Auto' : (byId.get(pendingId)?.name || pendingId)}`;
+      const modeLabel = preferredDeviceId ? 'Manual' : 'Auto';
+      els.dmxDeviceLabel.textContent = `Mode: ${modeLabel} • Preferred: ${preferredLabel} • Active: ${activeLabel}${pendingLabel}`;
+    }
+  }
   if (els.dmxRetryStatus) {
     const retries = Number(dmx.writeRetryLimit || 10);
     const failStreak = Number(dmx.consecutiveWriteFailures || 0);
@@ -2831,6 +2906,38 @@ async function applyAudioInputDevice() {
   }
 }
 
+async function applyDmxDeviceSelection() {
+  if (!els.dmxDeviceSelect) return;
+  const selected = String(els.dmxDeviceSelect.value || DMX_DEVICE_AUTO_VALUE);
+  const mode = selected === DMX_DEVICE_AUTO_VALUE ? 'auto' : 'manual';
+  const body = mode === 'auto'
+    ? { mode: 'auto' }
+    : { mode: 'manual', device_id: selected };
+
+  try {
+    await api('/api/dmx/devices/select', {
+      method: 'POST',
+      body,
+    });
+    await loadState({ silent: true });
+    showToast(mode === 'auto' ? 'DMX device selection set to Auto' : 'DMX preferred device updated');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function rescanDmxDevices() {
+  try {
+    await api('/api/dmx/devices/scan', {
+      method: 'POST',
+    });
+    await loadState({ silent: true });
+    showToast('DMX device rescan started');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
 async function applyOutputUniverse() {
   try {
     const universe = Number(els.outputUniverseSelect.value || 1);
@@ -3077,6 +3184,29 @@ function installEventListeners() {
       if (event.key === 'Enter') {
         event.preventDefault();
         applyDmxRetryLimit().catch((err) => showToast(err.message, 'error'));
+      }
+    });
+  }
+  if (els.applyDmxDeviceBtn) {
+    els.applyDmxDeviceBtn.addEventListener('click', () => {
+      applyDmxDeviceSelection().catch((err) => showToast(err.message, 'error'));
+    });
+  }
+  if (els.scanDmxDevicesBtn) {
+    els.scanDmxDevicesBtn.addEventListener('click', () => {
+      rescanDmxDevices().catch((err) => showToast(err.message, 'error'));
+    });
+  }
+  if (els.dmxDeviceSelect) {
+    els.dmxDeviceSelect.addEventListener('change', () => {
+      if (state.dmx && state.audio) {
+        renderStatus(state.dmx, state.audio);
+      }
+    });
+    els.dmxDeviceSelect.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        applyDmxDeviceSelection().catch((err) => showToast(err.message, 'error'));
       }
     });
   }

@@ -452,6 +452,27 @@ void appendAudioInputDevicesJson(std::ostringstream& ss, const std::vector<Audio
   ss << ']';
 }
 
+void appendDmxOutputDevicesJson(std::ostringstream& ss, const std::vector<DmxOutputDevice>& devices) {
+  ss << '[';
+  bool first = true;
+  for (const auto& device : devices) {
+    if (!first) {
+      ss << ',';
+    }
+    first = false;
+    ss << '{';
+    ss << "\"id\":\"" << jsonEscape(device.id) << "\",";
+    ss << "\"name\":\"" << jsonEscape(device.name) << "\",";
+    ss << "\"endpoint\":\"" << jsonEscape(device.endpoint) << "\",";
+    ss << "\"serial\":\"" << jsonEscape(device.serial) << "\",";
+    ss << "\"firmwareMajor\":" << device.firmwareMajor << ',';
+    ss << "\"firmwareMinor\":" << device.firmwareMinor << ',';
+    ss << "\"connected\":" << jsonBool(device.connected);
+    ss << '}';
+  }
+  ss << ']';
+}
+
 void appendLogArrayJson(std::ostringstream& ss, const std::vector<LogEntry>& logs) {
   ss << '[';
   bool first = true;
@@ -550,6 +571,20 @@ bool AppController::initialize(std::string& error) {
     return false;
   }
 
+  {
+    std::string preferredDeviceId;
+    std::string settingError;
+    if (db_.getSetting("dmx.preferred_device_id", preferredDeviceId, settingError)) {
+      dmx_.setPreferredDeviceId(preferredDeviceId);
+      const std::string normalized = trim(preferredDeviceId);
+      logMessage(LogLevel::Info, "dmx",
+                 normalized.empty() ? "DMX device selection: auto" : ("DMX preferred device: " + normalized));
+    } else if (!settingError.empty()) {
+      logMessage(LogLevel::Warn, "dmx", "Failed to load preferred DMX device: " + settingError);
+    }
+  }
+
+  dmx_.refreshDevices();
   rebuildAllUniversesFromDatabase();
 
   logMessage(LogLevel::Info, "dmx", "Selected DMX backend: " + dmx_.backendName());
@@ -661,6 +696,7 @@ std::vector<AppController::FixtureResolvedView> AppController::resolveFixtures(s
 
 std::string AppController::buildStatusJson() {
   const auto dmxStatus = dmx_.status();
+  const auto dmxDevices = dmx_.devices();
   const auto metrics = audio_.currentMetrics();
   const float reactiveVolumeThreshold = std::clamp(reactiveVolumeThreshold_.load(), 0.0F, 1.0F);
   const std::string reactiveProfile = reactiveProfileName(reactiveProfile_.load());
@@ -689,6 +725,12 @@ std::string AppController::buildStatusJson() {
   ss << "\"backend\":\"" << jsonEscape(dmxStatus.backend) << "\",";
   ss << "\"connected\":" << jsonBool(dmxStatus.connected) << ',';
   ss << "\"endpoint\":\"" << jsonEscape(dmxStatus.endpoint) << "\",";
+  ss << "\"activeDeviceId\":\"" << jsonEscape(dmxStatus.activeDeviceId) << "\",";
+  ss << "\"preferredDeviceId\":\"" << jsonEscape(dmxStatus.preferredDeviceId) << "\",";
+  ss << "\"selectionMode\":\"" << jsonEscape(dmxStatus.preferredDeviceId.empty() ? "auto" : "manual") << "\",";
+  ss << "\"devices\":";
+  appendDmxOutputDevicesJson(ss, dmxDevices);
+  ss << ',';
   ss << "\"port\":\"" << jsonEscape(dmxStatus.port) << "\",";
   ss << "\"serial\":\"" << jsonEscape(dmxStatus.serial) << "\",";
   ss << "\"firmwareMajor\":" << dmxStatus.firmwareMajor << ',';
@@ -768,6 +810,7 @@ std::string AppController::buildStateJson() {
   }
 
   const auto dmxStatus = dmx_.status();
+  const auto dmxDevices = dmx_.devices();
   const auto metrics = audio_.currentMetrics();
   const float reactiveVolumeThreshold = std::clamp(reactiveVolumeThreshold_.load(), 0.0F, 1.0F);
   const std::string reactiveProfile = reactiveProfileName(reactiveProfile_.load());
@@ -800,6 +843,12 @@ std::string AppController::buildStateJson() {
   ss << "\"backend\":\"" << jsonEscape(dmxStatus.backend) << "\",";
   ss << "\"connected\":" << jsonBool(dmxStatus.connected) << ',';
   ss << "\"endpoint\":\"" << jsonEscape(dmxStatus.endpoint) << "\",";
+  ss << "\"activeDeviceId\":\"" << jsonEscape(dmxStatus.activeDeviceId) << "\",";
+  ss << "\"preferredDeviceId\":\"" << jsonEscape(dmxStatus.preferredDeviceId) << "\",";
+  ss << "\"selectionMode\":\"" << jsonEscape(dmxStatus.preferredDeviceId.empty() ? "auto" : "manual") << "\",";
+  ss << "\"devices\":";
+  appendDmxOutputDevicesJson(ss, dmxDevices);
+  ss << ',';
   ss << "\"port\":\"" << jsonEscape(dmxStatus.port) << "\",";
   ss << "\"serial\":\"" << jsonEscape(dmxStatus.serial) << "\",";
   ss << "\"firmwareMajor\":" << dmxStatus.firmwareMajor << ',';
@@ -2519,6 +2568,77 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     std::ostringstream ss;
     ss << "{\"ok\":true,\"universe\":" << universe << '}';
     return jsonOk(ss.str(), 201);
+  }
+
+  if (request.method == "GET" && request.path == "/api/dmx/devices") {
+    const auto dmxStatus = dmx_.status();
+    const auto devices = dmx_.devices();
+    std::ostringstream ss;
+    ss << "{\"ok\":true,";
+    ss << "\"backend\":\"" << jsonEscape(dmxStatus.backend) << "\",";
+    ss << "\"selectionMode\":\"" << jsonEscape(dmxStatus.preferredDeviceId.empty() ? "auto" : "manual") << "\",";
+    ss << "\"preferredDeviceId\":\"" << jsonEscape(dmxStatus.preferredDeviceId) << "\",";
+    ss << "\"activeDeviceId\":\"" << jsonEscape(dmxStatus.activeDeviceId) << "\",";
+    ss << "\"devices\":";
+    appendDmxOutputDevicesJson(ss, devices);
+    ss << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/dmx/devices/select") {
+    auto form = parseFormEncoded(request.body);
+    std::string mode = toLower(trim(form["mode"]));
+    std::string deviceId = trim(form["device_id"]);
+
+    if (mode.empty()) {
+      mode = deviceId.empty() ? "auto" : "manual";
+    }
+    if (mode != "auto" && mode != "manual") {
+      return jsonError(422, "mode must be auto or manual");
+    }
+
+    if (mode == "auto") {
+      deviceId.clear();
+    } else if (deviceId.empty()) {
+      return jsonError(422, "device_id is required when mode=manual");
+    }
+
+    dmx_.setPreferredDeviceId(deviceId);
+    dmx_.forceReconnect();
+    dmx_.refreshDevices();
+
+    std::string writeSettingError;
+    if (!db_.setSetting("dmx.preferred_device_id", deviceId, writeSettingError)) {
+      return jsonError(500, writeSettingError);
+    }
+
+    logMessage(LogLevel::Info, "dmx",
+               deviceId.empty() ? "DMX device selection mode set to auto"
+                                : ("DMX preferred device set to " + deviceId));
+
+    std::ostringstream ss;
+    ss << "{\"ok\":true,";
+    ss << "\"selectionMode\":\"" << jsonEscape(deviceId.empty() ? "auto" : "manual") << "\",";
+    ss << "\"preferredDeviceId\":\"" << jsonEscape(deviceId) << "\"";
+    ss << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/dmx/devices/scan") {
+    dmx_.forceReconnect();
+    dmx_.refreshDevices();
+    const auto dmxStatus = dmx_.status();
+    const auto devices = dmx_.devices();
+    std::ostringstream ss;
+    ss << "{\"ok\":true,";
+    ss << "\"connected\":" << jsonBool(dmxStatus.connected) << ',';
+    ss << "\"selectionMode\":\"" << jsonEscape(dmxStatus.preferredDeviceId.empty() ? "auto" : "manual") << "\",";
+    ss << "\"preferredDeviceId\":\"" << jsonEscape(dmxStatus.preferredDeviceId) << "\",";
+    ss << "\"activeDeviceId\":\"" << jsonEscape(dmxStatus.activeDeviceId) << "\",";
+    ss << "\"devices\":";
+    appendDmxOutputDevicesJson(ss, devices);
+    ss << '}';
+    return jsonOk(ss.str());
   }
 
   if (request.method == "POST" && request.path == "/api/audio/reactive") {

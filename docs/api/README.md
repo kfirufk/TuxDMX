@@ -108,11 +108,21 @@ Standard response envelope:
 
 | Method | Path | Purpose | Body fields |
 |---|---|---|---|
+| GET | `/api/dmx/devices` | List compatible DMX output candidates + current selection | - |
+| POST | `/api/dmx/devices/select` | Set preferred output device selection mode | `mode` (`auto` or `manual`), `device_id` (required when `mode=manual`) |
+| POST | `/api/dmx/devices/scan` | Force reconnect and refresh DMX output candidates | - |
 | POST | `/api/dmx/patches` | Apply temporary direct patches | `patches` (`universe:address:value,...`) |
 | POST | `/api/dmx/blackout` | Panic blackout and disable reactive mode | - |
 | POST | `/api/dmx/write-retry-limit` | Set write retries | `retries` (1..200) |
 | POST | `/api/dmx/output-universe` | Select routed output universe | `universe` |
 | POST | `/api/dmx/universes` | Ensure universe exists | `universe` |
+
+`/api/status` and `/api/state` now include DMX device-selection fields:
+
+- `dmx.devices[]` candidate list (`id`, `name`, `endpoint`, `serial`, firmware info, `connected`)
+- `dmx.activeDeviceId`
+- `dmx.preferredDeviceId`
+- `dmx.selectionMode` (`auto` or `manual`)
 
 ### Audio Reactive
 

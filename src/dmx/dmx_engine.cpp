@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <utility>
 
 #include "dmx_backend_factory.hpp"
 #include "utils.hpp"
@@ -131,6 +132,41 @@ std::string DmxEngine::backendName() const {
     return "unknown";
   }
   return backend_->backendName();
+}
+
+std::vector<DmxOutputDevice> DmxEngine::devices() const {
+  if (!backend_) {
+    return {};
+  }
+  return backend_->devices();
+}
+
+void DmxEngine::refreshDevices() {
+  if (!backend_) {
+    return;
+  }
+  backend_->refreshDevices();
+}
+
+void DmxEngine::setPreferredDeviceId(std::string deviceId) {
+  if (!backend_) {
+    return;
+  }
+  backend_->setPreferredDeviceId(std::move(deviceId));
+}
+
+std::string DmxEngine::preferredDeviceId() const {
+  if (!backend_) {
+    return {};
+  }
+  return backend_->preferredDeviceId();
+}
+
+void DmxEngine::forceReconnect() {
+  if (!backend_) {
+    return;
+  }
+  backend_->disconnect();
 }
 
 std::vector<int> DmxEngine::knownUniverses() const {

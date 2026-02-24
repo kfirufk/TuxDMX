@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "dmx_output_backend.hpp"
@@ -25,17 +26,27 @@ class EnttecDmxPro final : public DmxOutputBackend {
   bool sendUniverse(const std::array<std::uint8_t, 512>& channels) override;
   void setWriteRetryLimit(int limit) override;
   int writeRetryLimit() const override;
+  std::vector<DmxOutputDevice> devices() const override;
+  void refreshDevices() override;
+  void setPreferredDeviceId(std::string deviceId) override;
+  std::string preferredDeviceId() const override;
   DmxDeviceStatus status() const override;
 
  private:
   bool probePort(const std::string& port, std::string& serial, int& fwMajor, int& fwMinor, std::string& error);
+  void refreshDevicesUnlocked(std::string& error);
+  static std::string deviceIdFor(std::string_view port, std::string_view serial);
+  static bool deviceIdMatches(const DmxOutputDevice& device, std::string_view preferredId);
   std::vector<std::string> candidatePorts() const;
 
   bool writeBytes(const std::uint8_t* data, std::size_t size);
   bool readFrame(std::uint8_t expectedLabel, std::vector<std::uint8_t>& payload, int timeoutMs);
 
   mutable std::mutex mutex_;
+  mutable std::mutex discoveryMutex_;
   DmxDeviceStatus status_;
+  std::vector<DmxOutputDevice> devices_;
+  std::string preferredDeviceId_;
   int consecutiveWriteFailures_ = 0;
   int writeRetryLimit_ = 10;
 

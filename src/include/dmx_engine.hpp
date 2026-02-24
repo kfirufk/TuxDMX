@@ -34,6 +34,11 @@ class DmxEngine {
   void setWriteRetryLimit(int limit);
   int writeRetryLimit() const;
   std::string backendName() const;
+  std::vector<DmxOutputDevice> devices() const;
+  void refreshDevices();
+  void setPreferredDeviceId(std::string deviceId);
+  std::string preferredDeviceId() const;
+  void forceReconnect();
   std::vector<int> knownUniverses() const;
 
   DmxDeviceStatus status() const;

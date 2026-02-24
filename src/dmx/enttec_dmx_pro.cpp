@@ -18,6 +18,7 @@
 #endif
 
 #include "logger.hpp"
+#include "utils.hpp"
 
 namespace tuxdmx {
 
@@ -123,13 +124,67 @@ std::string parseSerialHex(const std::vector<std::uint8_t>& payload) {
   return out;
 }
 
+std::string makeDeviceName(std::string_view endpoint, std::string_view serial) {
+  const std::string trimmedSerial = trim(serial);
+  const std::string trimmedEndpoint = trim(endpoint);
+  if (!trimmedSerial.empty() && !trimmedEndpoint.empty()) {
+    return "ENTTEC DMX USB Pro " + trimmedSerial + " @ " + trimmedEndpoint;
+  }
+  if (!trimmedSerial.empty()) {
+    return "ENTTEC DMX USB Pro " + trimmedSerial;
+  }
+  if (!trimmedEndpoint.empty()) {
+    return "ENTTEC DMX USB Pro @ " + trimmedEndpoint;
+  }
+  return "ENTTEC DMX USB Pro";
+}
+
 }  // namespace
 
-EnttecDmxPro::EnttecDmxPro() { status_.backend = backendName(); }
+EnttecDmxPro::EnttecDmxPro() {
+  status_.backend = backendName();
+  status_.preferredDeviceId = preferredDeviceId_;
+}
 
 EnttecDmxPro::~EnttecDmxPro() { disconnect(); }
 
 std::string EnttecDmxPro::backendName() const { return "enttec-usb-pro"; }
+
+std::string EnttecDmxPro::deviceIdFor(std::string_view port, std::string_view serial) {
+  const std::string trimmedSerial = trim(serial);
+  if (!trimmedSerial.empty()) {
+    return "serial:" + toLower(trimmedSerial);
+  }
+  const std::string trimmedPort = trim(port);
+  if (!trimmedPort.empty()) {
+    return "port:" + toLower(trimmedPort);
+  }
+  return {};
+}
+
+bool EnttecDmxPro::deviceIdMatches(const DmxOutputDevice& device, std::string_view preferredId) {
+  const std::string preferred = toLower(trim(preferredId));
+  if (preferred.empty() || preferred == "auto") {
+    return true;
+  }
+
+  if (preferred == toLower(device.id)) {
+    return true;
+  }
+  if (!device.serial.empty() && preferred == toLower(device.serial)) {
+    return true;
+  }
+  if (!device.serial.empty() && preferred == "serial:" + toLower(device.serial)) {
+    return true;
+  }
+  if (!device.endpoint.empty() && preferred == toLower(device.endpoint)) {
+    return true;
+  }
+  if (!device.endpoint.empty() && preferred == "port:" + toLower(device.endpoint)) {
+    return true;
+  }
+  return false;
+}
 
 std::vector<std::string> EnttecDmxPro::candidatePorts() const {
   std::vector<std::string> candidates;
@@ -299,6 +354,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   const std::string path = "\\\\.\\" + port;
   HANDLE handle = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
   if (handle == INVALID_HANDLE_VALUE) {
+    error = "Port open failed";
     return false;
   }
 
@@ -306,6 +362,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   dcb.DCBlength = sizeof(DCB);
   if (!GetCommState(handle, &dcb)) {
     CloseHandle(handle);
+    error = "Failed to read serial settings";
     return false;
   }
 
@@ -315,6 +372,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   dcb.StopBits = ONESTOPBIT;
   if (!SetCommState(handle, &dcb)) {
     CloseHandle(handle);
+    error = "Failed to apply serial settings";
     return false;
   }
 
@@ -328,26 +386,35 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
 
   {
     std::scoped_lock lock(mutex_);
+    if (handle_ != nullptr) {
+      CloseHandle(static_cast<HANDLE>(handle_));
+    }
     handle_ = handle;
   }
 #else
   const int fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
   if (fd < 0) {
+    error = "Port open failed";
     return false;
   }
 
   if (!configureSerialPort(fd)) {
     close(fd);
+    error = "Failed to configure serial port";
     return false;
   }
 
   if (fcntl(fd, F_SETFL, 0) != 0) {
     close(fd);
+    error = "Failed to set serial blocking mode";
     return false;
   }
 
   {
     std::scoped_lock lock(mutex_);
+    if (fd_ >= 0) {
+      close(fd_);
+    }
     fd_ = fd;
   }
 #endif
@@ -379,10 +446,67 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   }
 
   serial = parseSerialHex(serialPayload);
+  error.clear();
   return true;
 }
 
+void EnttecDmxPro::refreshDevicesUnlocked(std::string& error) {
+  error.clear();
+  std::vector<DmxOutputDevice> discovered;
+
+  const auto ports = candidatePorts();
+  if (ports.empty()) {
+    std::scoped_lock lock(mutex_);
+    devices_.clear();
+    error = "No candidate serial ports found";
+    return;
+  }
+
+  std::string firstProbeError;
+  for (const auto& port : ports) {
+    std::string serial;
+    std::string probeError;
+    int fwMajor = 0;
+    int fwMinor = 0;
+
+    if (probePort(port, serial, fwMajor, fwMinor, probeError)) {
+      DmxOutputDevice device;
+      device.id = deviceIdFor(port, serial);
+      device.name = makeDeviceName(port, serial);
+      device.endpoint = port;
+      device.serial = serial;
+      device.firmwareMajor = fwMajor;
+      device.firmwareMinor = fwMinor;
+      discovered.push_back(std::move(device));
+      disconnect();
+      continue;
+    }
+
+    if (firstProbeError.empty() && !probeError.empty()) {
+      firstProbeError = probeError;
+    }
+  }
+
+  std::sort(discovered.begin(), discovered.end(),
+            [](const DmxOutputDevice& a, const DmxOutputDevice& b) { return a.endpoint < b.endpoint; });
+  discovered.erase(std::unique(discovered.begin(), discovered.end(),
+                               [](const DmxOutputDevice& a, const DmxOutputDevice& b) {
+                                 return !a.id.empty() && !b.id.empty() && a.id == b.id;
+                               }),
+                   discovered.end());
+
+  {
+    std::scoped_lock lock(mutex_);
+    devices_ = discovered;
+  }
+
+  if (discovered.empty()) {
+    error = firstProbeError.empty() ? "No compatible DMX USB Pro devices found" : firstProbeError;
+  }
+}
+
 bool EnttecDmxPro::discoverAndConnect() {
+  std::scoped_lock discoveryLock(discoveryMutex_);
   {
     std::scoped_lock lock(mutex_);
     if (status_.connected) {
@@ -390,49 +514,97 @@ bool EnttecDmxPro::discoverAndConnect() {
     }
   }
 
-  auto ports = candidatePorts();
-  if (ports.empty()) {
+  std::string scanError;
+  refreshDevicesUnlocked(scanError);
+
+  std::vector<DmxOutputDevice> availableDevices;
+  std::string preferredId;
+  {
+    std::scoped_lock lock(mutex_);
+    availableDevices = devices_;
+    preferredId = preferredDeviceId_;
+  }
+
+  if (availableDevices.empty()) {
     std::scoped_lock lock(mutex_);
     status_.backend = backendName();
     status_.connected = false;
     status_.endpoint.clear();
-    status_.lastError = "No candidate serial ports found";
+    status_.activeDeviceId.clear();
+    status_.preferredDeviceId = preferredDeviceId_;
+    status_.lastError = scanError.empty() ? "No compatible DMX USB Pro devices found" : scanError;
     return false;
   }
 
-  for (const auto& port : ports) {
-    std::string serial;
-    std::string error;
-    int fwMajor = 0;
-    int fwMinor = 0;
-
-    if (probePort(port, serial, fwMajor, fwMinor, error)) {
-      std::scoped_lock relock(mutex_);
+  DmxOutputDevice selected = availableDevices.front();
+  if (!trim(preferredId).empty()) {
+    const auto it = std::find_if(availableDevices.begin(), availableDevices.end(),
+                                 [&preferredId](const DmxOutputDevice& device) { return deviceIdMatches(device, preferredId); });
+    if (it == availableDevices.end()) {
+      std::scoped_lock lock(mutex_);
       status_.backend = backendName();
-      status_.connected = true;
-      status_.endpoint = port;
-      status_.port = port;
-      status_.serial = serial;
-      status_.firmwareMajor = fwMajor;
-      status_.firmwareMinor = fwMinor;
-      status_.lastError.clear();
-      consecutiveWriteFailures_ = 0;
-      logMessage(LogLevel::Info, "dmx", "Connected to ENTTEC DMX USB Pro on " + port + " (serial " + serial + ")");
-      return true;
+      status_.connected = false;
+      status_.endpoint.clear();
+      status_.activeDeviceId.clear();
+      status_.preferredDeviceId = preferredDeviceId_;
+      status_.lastError = "Preferred DMX device not found: " + preferredId;
+      return false;
     }
+    selected = *it;
+  }
 
-    std::scoped_lock relock(mutex_);
+  std::string serial;
+  std::string probeError;
+  int fwMajor = 0;
+  int fwMinor = 0;
+  if (!probePort(selected.endpoint, serial, fwMajor, fwMinor, probeError)) {
+    std::scoped_lock lock(mutex_);
     status_.backend = backendName();
     status_.connected = false;
     status_.endpoint.clear();
-    status_.port.clear();
-    status_.serial.clear();
-    status_.firmwareMajor = 0;
-    status_.firmwareMinor = 0;
-    status_.lastError = error.empty() ? "Port probe failed" : error;
+    status_.activeDeviceId.clear();
+    status_.preferredDeviceId = preferredDeviceId_;
+    status_.lastError = probeError.empty() ? "Port probe failed" : probeError;
+    return false;
   }
 
-  return false;
+  const std::string activeDeviceId = deviceIdFor(selected.endpoint, serial);
+  {
+    std::scoped_lock lock(mutex_);
+    status_.backend = backendName();
+    status_.connected = true;
+    status_.endpoint = selected.endpoint;
+    status_.activeDeviceId = activeDeviceId;
+    status_.preferredDeviceId = preferredDeviceId_;
+    status_.port = selected.endpoint;
+    status_.serial = serial;
+    status_.firmwareMajor = fwMajor;
+    status_.firmwareMinor = fwMinor;
+    status_.lastError.clear();
+    consecutiveWriteFailures_ = 0;
+
+    bool foundConnected = false;
+    for (auto& device : devices_) {
+      const bool isConnected =
+          deviceIdMatches(device, activeDeviceId) || (!serial.empty() && !device.serial.empty() && device.serial == serial);
+      device.connected = isConnected;
+      foundConnected = foundConnected || isConnected;
+    }
+    if (!foundConnected) {
+      DmxOutputDevice current;
+      current.id = activeDeviceId;
+      current.name = makeDeviceName(selected.endpoint, serial);
+      current.endpoint = selected.endpoint;
+      current.serial = serial;
+      current.firmwareMajor = fwMajor;
+      current.firmwareMinor = fwMinor;
+      current.connected = true;
+      devices_.push_back(std::move(current));
+    }
+  }
+
+  logMessage(LogLevel::Info, "dmx", "Connected to ENTTEC DMX USB Pro on " + selected.endpoint + " (serial " + serial + ")");
+  return true;
 }
 
 void EnttecDmxPro::disconnect() {
@@ -452,10 +624,15 @@ void EnttecDmxPro::disconnect() {
 
   status_.connected = false;
   status_.endpoint.clear();
+  status_.activeDeviceId.clear();
+  status_.preferredDeviceId = preferredDeviceId_;
   status_.port.clear();
   status_.serial.clear();
   status_.firmwareMajor = 0;
   status_.firmwareMinor = 0;
+  for (auto& device : devices_) {
+    device.connected = false;
+  }
   consecutiveWriteFailures_ = 0;
 }
 
@@ -487,6 +664,7 @@ bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
     }
 
     status_.connected = false;
+    status_.activeDeviceId.clear();
     status_.lastError =
         "DMX write failed repeatedly (" + std::to_string(consecutiveWriteFailures_) + " tries), reconnecting";
     logMessage(LogLevel::Error, "dmx", status_.lastError);
@@ -501,6 +679,9 @@ bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
       fd_ = -1;
     }
 #endif
+    for (auto& device : devices_) {
+      device.connected = false;
+    }
     consecutiveWriteFailures_ = 0;
     return false;
   }
@@ -520,6 +701,65 @@ int EnttecDmxPro::writeRetryLimit() const {
   return writeRetryLimit_;
 }
 
+std::vector<DmxOutputDevice> EnttecDmxPro::devices() const {
+  std::scoped_lock lock(mutex_);
+  std::vector<DmxOutputDevice> out = devices_;
+  if (out.empty() && status_.connected) {
+    DmxOutputDevice current;
+    current.id = status_.activeDeviceId;
+    current.name = makeDeviceName(status_.endpoint, status_.serial);
+    current.endpoint = status_.endpoint;
+    current.serial = status_.serial;
+    current.firmwareMajor = status_.firmwareMajor;
+    current.firmwareMinor = status_.firmwareMinor;
+    current.connected = true;
+    out.push_back(std::move(current));
+    return out;
+  }
+
+  for (auto& device : out) {
+    const bool isConnected = status_.connected
+                             && (deviceIdMatches(device, status_.activeDeviceId)
+                                 || (!status_.serial.empty() && !device.serial.empty() && status_.serial == device.serial));
+    device.connected = isConnected;
+  }
+  return out;
+}
+
+void EnttecDmxPro::refreshDevices() {
+  std::scoped_lock discoveryLock(discoveryMutex_);
+  bool connected = false;
+  {
+    std::scoped_lock lock(mutex_);
+    connected = status_.connected;
+  }
+
+  if (connected) {
+    return;
+  }
+
+  std::string error;
+  refreshDevicesUnlocked(error);
+  if (!error.empty()) {
+    std::scoped_lock lock(mutex_);
+    if (!status_.connected) {
+      status_.lastError = error;
+    }
+  }
+}
+
+void EnttecDmxPro::setPreferredDeviceId(std::string deviceId) {
+  const std::string normalized = toLower(trim(deviceId));
+  std::scoped_lock lock(mutex_);
+  preferredDeviceId_ = normalized == "auto" ? "" : normalized;
+  status_.preferredDeviceId = preferredDeviceId_;
+}
+
+std::string EnttecDmxPro::preferredDeviceId() const {
+  std::scoped_lock lock(mutex_);
+  return preferredDeviceId_;
+}
+
 DmxDeviceStatus EnttecDmxPro::status() const {
   std::scoped_lock lock(mutex_);
   DmxDeviceStatus out = status_;
@@ -527,6 +767,7 @@ DmxDeviceStatus EnttecDmxPro::status() const {
   if (out.endpoint.empty()) {
     out.endpoint = out.port;
   }
+  out.preferredDeviceId = preferredDeviceId_;
   out.writeRetryLimit = writeRetryLimit_;
   out.consecutiveWriteFailures = consecutiveWriteFailures_;
   return out;

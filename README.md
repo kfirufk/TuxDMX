@@ -43,6 +43,7 @@ The Learn/Template workflow is designed so you can test channels live while buil
   - serial-port scan
   - serial probe (`0x7E 0x0A 0x00 0x00 0xE7`)
   - firmware and serial surfaced in UI
+  - multi-device candidate list with auto/manual preferred-device selection
 - Multi-universe engine model:
   - stores/updates multiple universes
   - routes selected output universe to active DMX backend
@@ -205,6 +206,7 @@ ctest --preset test-debug
 --db <path>          default: data/tuxdmx.sqlite
 --web-root <path>    default: ./web
 --log-file <path>    default: data/tuxdmx.log
+--dmx-backend <id>   default: enttec-usb-pro
 ```
 
 ## Key API Endpoints
@@ -217,6 +219,9 @@ ctest --preset test-debug
 - `POST /api/fixtures/{id}/channels/{channel}` set channel value
 - `POST /api/dmx/output-universe` set active output universe
 - `POST /api/dmx/universes` create/ensure a universe exists
+- `GET /api/dmx/devices` list compatible DMX output device candidates
+- `POST /api/dmx/devices/select` set auto/manual preferred DMX output device
+- `POST /api/dmx/devices/scan` force reconnect + rescan DMX output candidates
 - `POST /api/dmx/patches` apply temporary direct DMX patches (`universe:address:value,...`)
 - `POST /api/dmx/blackout` panic blackout (set known universes and fixture channels to zero, reactive off)
 - `POST /api/dmx/write-retry-limit` set DMX write retries (`retries` in range `1..200`)
@@ -245,6 +250,7 @@ ctest --preset test-debug
 ## Notes
 
 - ENTTEC DMX USB Pro is a single physical DMX output. This app supports multiple universes in software and lets you select which universe is routed to the hardware output.
+- When multiple compatible DMX USB Pro-style interfaces are connected, use device selection (Auto or preferred manual target) in the Connection card.
 - MIDI mapping is handled in the server (RtMidi when available, CoreMIDI fallback on macOS), so control is not tied to browser Web MIDI support.
 - Reactive formulas are intentionally commented in `/Volumes/extreme-ssd/projects/dmx512/tuxdmx/src/app/app_controller.cpp` and `/Volumes/extreme-ssd/projects/dmx512/tuxdmx/src/audio/audio_engine.cpp` so you can tune behavior quickly.
 

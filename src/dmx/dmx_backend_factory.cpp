@@ -48,6 +48,20 @@ class NullDmxOutputBackend final : public DmxOutputBackend {
     return status_.writeRetryLimit;
   }
 
+  std::vector<DmxOutputDevice> devices() const override { return {}; }
+
+  void refreshDevices() override {}
+
+  void setPreferredDeviceId(std::string deviceId) override {
+    std::scoped_lock lock(mutex_);
+    status_.preferredDeviceId = trim(deviceId);
+  }
+
+  std::string preferredDeviceId() const override {
+    std::scoped_lock lock(mutex_);
+    return status_.preferredDeviceId;
+  }
+
   DmxDeviceStatus status() const override {
     std::scoped_lock lock(mutex_);
     return status_;

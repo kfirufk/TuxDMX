@@ -40,12 +40,18 @@
     <section class="status-strip glass" id="status-strip">
       <article>
         <h2>Device</h2>
-        <p id="device-status">Checking ENTTEC DMX USB Pro...</p>
+        <p id="device-status">Checking DMX output...</p>
       </article>
       <article>
         <h2>Connection</h2>
-        <p id="device-port">Port: --</p>
+        <p id="device-port">Endpoint: --</p>
         <p id="device-serial">Serial: --</p>
+        <div class="inline-controls">
+          <select id="dmx-device-select" aria-label="DMX output device"></select>
+          <button id="apply-dmx-device-btn" class="btn ghost" type="button">Use</button>
+          <button id="scan-dmx-devices-btn" class="btn ghost" type="button">Rescan</button>
+        </div>
+        <p id="dmx-device-label">Mode: Auto</p>
         <div class="inline-controls">
           <input id="dmx-retry-limit" type="number" min="1" max="200" value="10" aria-label="DMX retry limit">
           <button id="apply-dmx-retry-btn" class="btn ghost" type="button">Apply Retries</button>

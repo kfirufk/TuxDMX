@@ -19,3 +19,43 @@
 2026-02-24 02:22:01.700 [INFO] dmx: Connected to ENTTEC DMX USB Pro on /dev/cu.usbserial-EN472576 (serial 022F2576)
 2026-02-24 02:23:14.896 [INFO] server: Shutdown requested
 2026-02-24 02:23:15.589 [INFO] server: Shutdown complete
+2026-02-24 07:40:48.273 [INFO] server: Starting tuxdmx
+2026-02-24 07:40:48.273 [INFO] server: Log file: data/tuxdmx.log
+2026-02-24 07:40:48.277 [INFO] dmx: Selected DMX backend: enttec-usb-pro
+2026-02-24 07:40:48.277 [INFO] midi: Server MIDI backend: coremidi
+2026-02-24 07:40:48.277 [INFO] server: HTTP UI: http://0.0.0.0:8080
+2026-02-24 07:40:48.290 [INFO] dmx: Connected to ENTTEC DMX USB Pro on /dev/cu.usbserial-EN472576 (serial 022F2576)
+2026-02-24 07:41:50.201 [WARN] dmx: DMX write failed (1/10), retrying
+2026-02-24 07:41:50.235 [WARN] dmx: DMX write failed (2/10), retrying
+2026-02-24 07:41:50.269 [WARN] dmx: DMX write failed (3/10), retrying
+2026-02-24 07:41:50.303 [WARN] dmx: DMX write failed (4/10), retrying
+2026-02-24 07:41:50.339 [WARN] dmx: DMX write failed (5/10), retrying
+2026-02-24 07:41:50.377 [WARN] dmx: DMX write failed (6/10), retrying
+2026-02-24 07:41:50.415 [WARN] dmx: DMX write failed (7/10), retrying
+2026-02-24 07:41:50.449 [WARN] dmx: DMX write failed (8/10), retrying
+2026-02-24 07:41:50.484 [WARN] dmx: DMX write failed (9/10), retrying
+2026-02-24 07:41:50.522 [ERROR] dmx: DMX write failed repeatedly (10 tries), reconnecting
+2026-02-24 07:41:53.613 [INFO] dmx: Connected to ENTTEC DMX USB Pro on /dev/cu.usbserial-EN472576 (serial 022F2576)
+2026-02-24 07:41:53.736 [INFO] audio: Reactive mode enabled
+2026-02-24 07:41:54.387 [WARN] dmx: DMX write failed (1/10), retrying
+2026-02-24 07:41:54.426 [WARN] dmx: DMX write failed (2/10), retrying
+2026-02-24 07:41:54.464 [WARN] dmx: DMX write failed (3/10), retrying
+2026-02-24 07:41:54.500 [WARN] dmx: DMX write failed (4/10), retrying
+2026-02-24 07:41:54.538 [WARN] dmx: DMX write failed (5/10), retrying
+2026-02-24 07:41:54.576 [WARN] dmx: DMX write failed (6/10), retrying
+2026-02-24 07:41:54.615 [WARN] dmx: DMX write failed (7/10), retrying
+2026-02-24 07:41:54.653 [WARN] dmx: DMX write failed (8/10), retrying
+2026-02-24 07:41:54.688 [WARN] dmx: DMX write failed (9/10), retrying
+2026-02-24 07:41:54.724 [ERROR] dmx: DMX write failed repeatedly (10 tries), reconnecting
+2026-02-24 07:41:55.519 [INFO] audio: Reactive mode disabled
+2026-02-24 07:41:59.626 [INFO] dmx: Connected to ENTTEC DMX USB Pro on /dev/cu.usbserial-EN472576 (serial 022F2576)
+2026-02-24 07:44:27.632 [INFO] server: Shutdown requested
+2026-02-24 07:44:28.328 [INFO] server: Shutdown complete
+2026-02-24 07:44:31.634 [INFO] server: Starting tuxdmx
+2026-02-24 07:44:31.634 [INFO] server: Log file: data/tuxdmx.log
+2026-02-24 07:44:31.636 [INFO] dmx: Selected DMX backend: enttec-usb-pro
+2026-02-24 07:44:31.636 [INFO] midi: Server MIDI backend: coremidi
+2026-02-24 07:44:31.636 [INFO] server: HTTP UI: http://0.0.0.0:8080
+2026-02-24 07:44:31.664 [INFO] dmx: Connected to ENTTEC DMX USB Pro on /dev/cu.usbserial-EN472576 (serial 022F2576)
+2026-02-24 07:46:29.060 [INFO] server: Shutdown requested
+2026-02-24 07:46:29.771 [INFO] server: Shutdown complete
