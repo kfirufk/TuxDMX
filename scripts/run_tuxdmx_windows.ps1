@@ -115,7 +115,9 @@ if ($missing.Count -gt 0) {
     Write-Host " - $m" -ForegroundColor Red
   }
   Write-Host ""
-  Write-Host "After installation, reopen terminal and run this script again." -ForegroundColor Yellow
+  Write-Host "Important: PATH changes from installers are not visible in this already-open terminal." -ForegroundColor Yellow
+  Write-Host "If you just installed CMake/Ninja/Build Tools, close this PowerShell window and open a new one." -ForegroundColor Yellow
+  Write-Host "Then run this script again." -ForegroundColor Yellow
   exit 1
 }
 
