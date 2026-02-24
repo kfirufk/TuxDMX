@@ -80,6 +80,12 @@ Cross-platform C++23 DMX control server for **ENTTEC DMX USB Pro** with a respon
 - Optional: RtMidi (`rtmidi`) for server-side MIDI input (cross-platform backend)
 - macOS fallback: CoreMIDI backend is used automatically when RtMidi is not installed
 
+### OS-Specific Setup Guides
+
+- [Linux guide](./docs/setup/linux.md)
+- [macOS guide](./docs/setup/macos.md)
+- [Windows guide](./docs/setup/windows.md)
+
 ### Linux/macOS (Ninja)
 
 ```bash
@@ -107,6 +113,18 @@ Optional flags:
 ./scripts/run_tuxdmx_mac.sh --port 8090 --bind 0.0.0.0 --no-open
 ```
 
+### Linux One-Command Run Script
+
+```bash
+./scripts/run_tuxdmx_linux.sh
+```
+
+Optional flags:
+
+```bash
+./scripts/run_tuxdmx_linux.sh --run-tests --port 8090 --bind 0.0.0.0 --no-open
+```
+
 ### Windows (MSVC)
 
 ```powershell
@@ -116,6 +134,32 @@ cmake --build build\debug
 ```
 
 Open `http://<server-ip>:8080` from phone/desktop browser.
+
+### Windows One-Command Run Script
+
+```powershell
+.\scripts\run_tuxdmx_windows.ps1
+```
+
+The script will:
+- verify required tools are available (`cmake`, `ninja` for ninja presets, and a C++ compiler)
+- print install/download guidance if something is missing
+- configure + build with CMake presets
+- start the server and wait for `/api/state`
+- open `http://127.0.0.1:8080` in your browser
+- print local/LAN URL and log file path for debugging
+
+Optional flags:
+
+```powershell
+.\scripts\run_tuxdmx_windows.ps1 -Port 8090 -Bind 0.0.0.0 -RunTests -NoOpen
+```
+
+If PowerShell blocks script execution, run once in that shell:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
 
 ## Tests
 
