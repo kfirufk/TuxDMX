@@ -26,6 +26,15 @@ The script:
 - starts server and waits for `/api/state`
 - opens browser (unless disabled)
 
+## Multiple DMX Devices
+
+If more than one compatible DMX interface is connected:
+- open the web UI `Connection` card
+- click `Rescan` to refresh detected devices
+- choose `Auto Select` or a specific device and click `Use`
+
+The preferred device selection is persisted in SQLite and restored on next startup.
+
 ## Launcher Options
 
 ```text
