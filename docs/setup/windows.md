@@ -15,11 +15,12 @@ Optional:
 
 ## Quick Start
 
-```powershell
-.\scripts\run_tuxdmx_windows.ps1
+```bat
+.\scripts\run_tuxdmx_windows.cmd
 ```
 
-The script:
+The launcher:
+- starts the PowerShell script with per-process execution policy bypass (no permanent policy change)
 - checks required tools and versions
 - prints install guidance for missing dependencies
 - configures/builds with CMake presets
@@ -53,11 +54,19 @@ The preferred device selection is persisted in SQLite and restored on next start
 
 Example:
 
-```powershell
-.\scripts\run_tuxdmx_windows.ps1 -RunTests -Port 8090 -Bind 0.0.0.0 -NoOpen
+```bat
+.\scripts\run_tuxdmx_windows.cmd -RunTests -Port 8090 -Bind 0.0.0.0 -NoOpen
 ```
 
-## If Script Execution Is Blocked
+## Direct PowerShell Launch (Advanced)
+
+If you want to run the `.ps1` directly:
+
+```powershell
+.\scripts\run_tuxdmx_windows.ps1
+```
+
+If direct `.ps1` execution is blocked, either use the `.cmd` launcher above, or run:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass

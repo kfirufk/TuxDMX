@@ -174,11 +174,12 @@ Open `http://<server-ip>:8080` from phone/desktop browser.
 
 ### Windows One-Command Run Script
 
-```powershell
-.\scripts\run_tuxdmx_windows.ps1
+```bat
+.\scripts\run_tuxdmx_windows.cmd
 ```
 
-The script will:
+The launcher will:
+- run the PowerShell launcher with per-process execution policy bypass (no permanent policy change)
 - verify required tools are available (`cmake`, `ninja` for ninja presets, and a C++ compiler)
 - print install/download guidance if something is missing
 - configure + build with CMake presets
@@ -188,11 +189,17 @@ The script will:
 
 Optional flags:
 
-```powershell
-.\scripts\run_tuxdmx_windows.ps1 -Port 8090 -Bind 0.0.0.0 -RunTests -NoOpen
+```bat
+.\scripts\run_tuxdmx_windows.cmd -Port 8090 -Bind 0.0.0.0 -RunTests -NoOpen
 ```
 
-If PowerShell blocks script execution, run once in that shell:
+If you prefer launching the PowerShell script directly:
+
+```powershell
+.\scripts\run_tuxdmx_windows.ps1
+```
+
+If direct `.ps1` execution is blocked, run once in that shell:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
