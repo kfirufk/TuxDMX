@@ -30,6 +30,11 @@ The Learn/Template workflow is designed so you can test channels live while buil
 - C++23 backend with CMake + presets.
 - Pluggable DMX output backend architecture (current backend: `enttec-usb-pro`).
 - Server/client API design that supports custom third-party UIs in addition to the built-in web UI.
+- Built-in web client stack:
+  - plain HTML5 + CSS3 + vanilla JavaScript (`web/index.html`, `web/styles.css`, `web/app.js`)
+  - no React/Vue/Svelte/Angular, no Node.js build step, no npm runtime dependencies
+  - browser APIs used directly: `fetch`, `URLSearchParams`, `localStorage`, `requestAnimationFrame`
+  - inline SVG icons + Google Fonts (`Manrope`, `Sora`)
 - SQLite persistence for:
   - fixture templates
   - channel definitions and value ranges
