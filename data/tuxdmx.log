@@ -1,0 +1,5 @@
+2026-02-24 02:00:07.896 [INFO] server: Starting tuxdmx
+2026-02-24 02:00:07.897 [INFO] server: Log file: data/tuxdmx.log
+2026-02-24 02:00:07.916 [INFO] midi: Server MIDI backend: coremidi
+2026-02-24 02:00:07.916 [INFO] server: HTTP UI: http://0.0.0.0:8080
+2026-02-24 02:00:07.948 [INFO] dmx: Connected to ENTTEC DMX USB Pro on /dev/cu.usbserial-EN472576 (serial 022F2576)
