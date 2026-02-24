@@ -34,6 +34,19 @@ If more than one compatible DMX interface is connected:
 
 The preferred device selection is persisted in SQLite and restored on next startup.
 
+## Transport Diagnostics (Linux)
+
+When disconnects happen, check the `Connection` card / transport line:
+- `lastErrorKind` reports classified causes (`endpoint_missing`, `disconnected`, `io`, `timeout`, `busy`, `permission`)
+- `lastErrorHint` provides immediate troubleshooting text
+- USB reset-like failures are marked with `possible usb power/hub issue` where detected
+
+Live server log:
+
+```bash
+tail -f ./data/tuxdmx.log
+```
+
 ## Launcher Options
 
 ```text

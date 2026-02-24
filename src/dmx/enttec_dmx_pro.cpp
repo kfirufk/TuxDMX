@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -405,13 +406,109 @@ int nativeErrorCode() {
 #endif
 }
 
-#ifndef _WIN32
-struct PosixSerialErrorDiagnosis {
+struct NativeSerialErrorDiagnosis {
   std::string kind;
   std::string hint;
   bool likelyUsbPower = false;
 };
 
+#ifdef _WIN32
+std::string windowsErrorText(int code) {
+  if (code <= 0) {
+    return {};
+  }
+
+  LPSTR messageBuffer = nullptr;
+  const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+  const DWORD len = FormatMessageA(flags, nullptr, static_cast<DWORD>(code), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                   reinterpret_cast<LPSTR>(&messageBuffer), 0, nullptr);
+  if (len == 0 || messageBuffer == nullptr) {
+    return {};
+  }
+
+  std::string text(messageBuffer, len);
+  LocalFree(messageBuffer);
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0) {
+    text.pop_back();
+  }
+  return text;
+}
+
+bool windowsEndpointExists(std::string_view endpoint) {
+  const std::string trimmed = trim(endpoint);
+  if (trimmed.empty()) {
+    return false;
+  }
+
+  if (isFtdiEndpoint(trimmed)) {
+    const std::string targetSerial = toLower(ftdiEndpointSerial(trimmed));
+    if (targetSerial.empty()) {
+      return false;
+    }
+    const auto endpoints = enumerateWindowsFtdiEndpoints();
+    return std::any_of(endpoints.begin(), endpoints.end(), [&targetSerial](const std::string& candidate) {
+      return toLower(ftdiEndpointSerial(candidate)) == targetSerial;
+    });
+  }
+
+  std::array<char, 512> devicePath{};
+  if (QueryDosDeviceA(trimmed.c_str(), devicePath.data(), static_cast<DWORD>(devicePath.size())) != 0) {
+    return true;
+  }
+  return false;
+}
+
+NativeSerialErrorDiagnosis diagnoseNativeSerialError(std::string_view stage, int code, std::string_view endpoint) {
+  NativeSerialErrorDiagnosis diagnosis;
+  diagnosis.kind = "unknown";
+
+  switch (code) {
+    case ERROR_SEM_TIMEOUT:
+      diagnosis.kind = "timeout";
+      diagnosis.hint = "Timed out waiting for serial I/O.";
+      break;
+    case ERROR_ACCESS_DENIED:
+      diagnosis.kind = "permission";
+      diagnosis.hint = "Access denied to device endpoint.";
+      break;
+    case ERROR_SHARING_VIOLATION:
+      diagnosis.kind = "busy";
+      diagnosis.hint = "Endpoint is busy (likely opened by another app).";
+      break;
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+    case ERROR_INVALID_HANDLE:
+    case ERROR_DEV_NOT_EXIST:
+    case ERROR_DEVICE_NOT_CONNECTED:
+      diagnosis.kind = "disconnected";
+      diagnosis.hint = "Device endpoint is unavailable; interface likely disconnected/reset.";
+      diagnosis.likelyUsbPower = code == ERROR_DEVICE_NOT_CONNECTED;
+      break;
+    case ERROR_GEN_FAILURE:
+    case ERROR_NOT_READY:
+    case ERROR_OPERATION_ABORTED:
+    case ERROR_IO_DEVICE:
+    case ERROR_CRC:
+      diagnosis.kind = "io";
+      diagnosis.hint = "USB/serial I/O error while talking to the DMX interface.";
+      diagnosis.likelyUsbPower = true;
+      break;
+    default:
+      break;
+  }
+
+  if (!trim(endpoint).empty() && !windowsEndpointExists(endpoint)) {
+    diagnosis.kind = "endpoint_missing";
+    diagnosis.hint = "COM/FTDI endpoint disappeared; likely unplug, hub reset, or USB power drop.";
+    diagnosis.likelyUsbPower = true;
+  } else if (diagnosis.kind == "unknown" && stage == "probe") {
+    diagnosis.hint = "Probe failed; verify FTDI driver, cable, and USB stability.";
+  }
+
+  return diagnosis;
+}
+
+#else
 std::string errnoText(int code) {
   if (code <= 0) {
     return {};
@@ -429,8 +526,8 @@ bool serialEndpointExists(std::string_view endpoint) {
   return std::filesystem::exists(path, ec) && !ec;
 }
 
-PosixSerialErrorDiagnosis diagnosePosixSerialError(std::string_view stage, int code, std::string_view endpoint) {
-  PosixSerialErrorDiagnosis diagnosis;
+NativeSerialErrorDiagnosis diagnoseNativeSerialError(std::string_view stage, int code, std::string_view endpoint) {
+  NativeSerialErrorDiagnosis diagnosis;
   diagnosis.kind = "unknown";
 
   switch (code) {
@@ -482,24 +579,7 @@ std::string formatNativeErrorMessage(std::string_view base, int code, std::strin
                                      std::string* kind = nullptr, std::string* hint = nullptr,
                                      bool* likelyUsbPower = nullptr) {
   std::string message = trim(base);
-#ifdef _WIN32
-  if (code != 0) {
-    if (!message.empty()) {
-      message += ' ';
-    }
-    message += "(code " + std::to_string(code) + ")";
-  }
-  if (kind != nullptr) {
-    kind->clear();
-  }
-  if (hint != nullptr) {
-    hint->clear();
-  }
-  if (likelyUsbPower != nullptr) {
-    *likelyUsbPower = false;
-  }
-#else
-  const auto diagnosis = diagnosePosixSerialError(stage, code, endpoint);
+  const auto diagnosis = diagnoseNativeSerialError(stage, code, endpoint);
   if (kind != nullptr) {
     *kind = diagnosis.kind;
   }
@@ -511,11 +591,21 @@ std::string formatNativeErrorMessage(std::string_view base, int code, std::strin
   }
 
   if (code != 0) {
+#ifdef _WIN32
+    const std::string codeText = windowsErrorText(code);
+#else
     const std::string codeText = errnoText(code);
+#endif
     if (!message.empty()) {
       message += ' ';
     }
-    message += "(errno " + std::to_string(code);
+    message += "(";
+#ifdef _WIN32
+    message += "code ";
+#else
+    message += "errno ";
+#endif
+    message += std::to_string(code);
     if (!codeText.empty()) {
       message += ": " + codeText;
     }
@@ -528,7 +618,6 @@ std::string formatNativeErrorMessage(std::string_view base, int code, std::strin
     }
     message += diagnosis.hint;
   }
-#endif
   return message;
 }
 
@@ -557,9 +646,7 @@ void EnttecDmxPro::setLastErrorUnlocked(std::string stage, std::string message, 
   status_.lastErrorKind = std::move(kind);
   status_.lastErrorHint = std::move(hint);
   status_.lastErrorLikelyUsbPower = likelyUsbPower;
-#ifndef _WIN32
-  const auto diagnosis =
-      diagnosePosixSerialError(status_.lastErrorStage, status_.lastErrorCode, status_.lastErrorEndpoint);
+  const auto diagnosis = diagnoseNativeSerialError(status_.lastErrorStage, status_.lastErrorCode, status_.lastErrorEndpoint);
   if (status_.lastErrorKind.empty()) {
     status_.lastErrorKind = diagnosis.kind;
   }
@@ -567,7 +654,6 @@ void EnttecDmxPro::setLastErrorUnlocked(std::string stage, std::string message, 
     status_.lastErrorHint = diagnosis.hint;
   }
   status_.lastErrorLikelyUsbPower = status_.lastErrorLikelyUsbPower || diagnosis.likelyUsbPower;
-#endif
   status_.lastErrorUnixMs = nowUnixMs();
 }
 

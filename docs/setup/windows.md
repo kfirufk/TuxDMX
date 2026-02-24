@@ -47,6 +47,19 @@ If more than one compatible DMX interface is connected:
 
 The preferred device selection is persisted in SQLite and restored on next startup.
 
+## Transport Diagnostics (Windows)
+
+When disconnects happen, check the `Connection` card / transport line:
+- `lastErrorKind` reports classified causes (`endpoint_missing`, `disconnected`, `io`, `timeout`, `busy`, `permission`)
+- `lastErrorHint` provides immediate troubleshooting text
+- `possible usb power/hub issue` is flagged when error patterns match USB reset/brownout behavior
+
+Live server log:
+
+```powershell
+Get-Content .\data\tuxdmx.log -Wait
+```
+
 ## Launcher Options
 
 ```text
