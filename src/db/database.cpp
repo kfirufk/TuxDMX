@@ -273,109 +273,6 @@ bool templateChannelsMatch(sqlite3* db, int templateId, const std::vector<SeedCh
   return channelCursor == channels.size();
 }
 
-bool cloneTemplateDefinition(sqlite3* db, int sourceTemplateId, const char* newName, const char* newDescription,
-                             std::string& error) {
-  Statement sourceStmt;
-  if (!prepare(db, "SELECT footprint_channels FROM fixture_templates WHERE id = ?;", sourceStmt, error)) {
-    return false;
-  }
-  sqlite3_bind_int(sourceStmt.stmt, 1, sourceTemplateId);
-  if (sqlite3_step(sourceStmt.stmt) != SQLITE_ROW) {
-    error = "Source template not found";
-    return false;
-  }
-
-  const int footprint = columnInt(sourceStmt.stmt, 0);
-
-  Statement insertTemplateStmt;
-  if (!prepare(db, "INSERT INTO fixture_templates(name, description, footprint_channels) VALUES(?, ?, ?);",
-               insertTemplateStmt, error)) {
-    return false;
-  }
-  sqlite3_bind_text(insertTemplateStmt.stmt, 1, newName, -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(insertTemplateStmt.stmt, 2, newDescription, -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int(insertTemplateStmt.stmt, 3, footprint);
-  if (sqlite3_step(insertTemplateStmt.stmt) != SQLITE_DONE) {
-    error = sqlite3_errmsg(db);
-    return false;
-  }
-
-  const int targetTemplateId = static_cast<int>(sqlite3_last_insert_rowid(db));
-
-  Statement sourceChannelStmt;
-  if (!prepare(db,
-               "SELECT id, channel_index, name, kind, default_value FROM template_channels "
-               "WHERE template_id = ? ORDER BY channel_index;",
-               sourceChannelStmt, error)) {
-    return false;
-  }
-  sqlite3_bind_int(sourceChannelStmt.stmt, 1, sourceTemplateId);
-
-  Statement insertChannelStmt;
-  if (!prepare(db,
-               "INSERT INTO template_channels(template_id, channel_index, name, kind, default_value) VALUES(?, ?, ?, ?, ?);",
-               insertChannelStmt, error)) {
-    return false;
-  }
-
-  Statement sourceRangeStmt;
-  if (!prepare(db, "SELECT start_value, end_value, label FROM template_channel_ranges WHERE channel_id = ? "
-                   "ORDER BY start_value, end_value, id;",
-               sourceRangeStmt, error)) {
-    return false;
-  }
-
-  Statement insertRangeStmt;
-  if (!prepare(db, "INSERT INTO template_channel_ranges(channel_id, start_value, end_value, label) VALUES(?, ?, ?, ?);",
-               insertRangeStmt, error)) {
-    return false;
-  }
-
-  while (sqlite3_step(sourceChannelStmt.stmt) == SQLITE_ROW) {
-    const int sourceChannelId = columnInt(sourceChannelStmt.stmt, 0);
-    const int channelIndex = columnInt(sourceChannelStmt.stmt, 1);
-    const std::string name = columnText(sourceChannelStmt.stmt, 2);
-    const std::string kind = columnText(sourceChannelStmt.stmt, 3);
-    const int defaultValue = columnInt(sourceChannelStmt.stmt, 4);
-
-    sqlite3_reset(insertChannelStmt.stmt);
-    sqlite3_clear_bindings(insertChannelStmt.stmt);
-    sqlite3_bind_int(insertChannelStmt.stmt, 1, targetTemplateId);
-    sqlite3_bind_int(insertChannelStmt.stmt, 2, channelIndex);
-    sqlite3_bind_text(insertChannelStmt.stmt, 3, name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(insertChannelStmt.stmt, 4, kind.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(insertChannelStmt.stmt, 5, defaultValue);
-    if (sqlite3_step(insertChannelStmt.stmt) != SQLITE_DONE) {
-      error = sqlite3_errmsg(db);
-      return false;
-    }
-
-    const int targetChannelId = static_cast<int>(sqlite3_last_insert_rowid(db));
-
-    sqlite3_reset(sourceRangeStmt.stmt);
-    sqlite3_clear_bindings(sourceRangeStmt.stmt);
-    sqlite3_bind_int(sourceRangeStmt.stmt, 1, sourceChannelId);
-    while (sqlite3_step(sourceRangeStmt.stmt) == SQLITE_ROW) {
-      const int startValue = columnInt(sourceRangeStmt.stmt, 0);
-      const int endValue = columnInt(sourceRangeStmt.stmt, 1);
-      const std::string label = columnText(sourceRangeStmt.stmt, 2);
-
-      sqlite3_reset(insertRangeStmt.stmt);
-      sqlite3_clear_bindings(insertRangeStmt.stmt);
-      sqlite3_bind_int(insertRangeStmt.stmt, 1, targetChannelId);
-      sqlite3_bind_int(insertRangeStmt.stmt, 2, startValue);
-      sqlite3_bind_int(insertRangeStmt.stmt, 3, endValue);
-      sqlite3_bind_text(insertRangeStmt.stmt, 4, label.c_str(), -1, SQLITE_TRANSIENT);
-      if (sqlite3_step(insertRangeStmt.stmt) != SQLITE_DONE) {
-        error = sqlite3_errmsg(db);
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
 }  // namespace
 
 Database::Database(std::string dbPath) : dbPath_(std::move(dbPath)) {}
@@ -1839,7 +1736,6 @@ bool Database::seedMiraDye(std::string& error) {
   std::scoped_lock lock(mutex_);
 
   static constexpr const char* kMiraTemplateName = "Mira Dye";
-  static constexpr const char* kMiraLegacyTemplateName = "Mira Dye (D Mode Legacy)";
   static constexpr const char* kMiraADescription =
       "Mira Dye A-mode profile (13 channels): pan/tilt, RGBW, strip effects, built-in color effects, and macro.";
 
@@ -1923,23 +1819,12 @@ bool Database::seedMiraDye(std::string& error) {
     return updateTemplateMetadata(db_, templateId, kMiraADescription, 13, error);
   }
 
-  // Existing install with a different Mira layout: snapshot as legacy D-mode, then replace Mira with A-mode.
+  // Existing install with a different Mira layout: replace in place with A-mode.
   if (!beginTransaction(error)) {
     return false;
   }
 
   do {
-    const int legacyTemplateId = findTemplateIdByName(db_, kMiraLegacyTemplateName, error);
-    if (!error.empty()) {
-      break;
-    }
-    if (legacyTemplateId == 0) {
-      if (!cloneTemplateDefinition(db_, templateId, kMiraLegacyTemplateName,
-                                   "Legacy Mira layout snapshot kept before A-mode migration.", error)) {
-        break;
-      }
-    }
-
     if (!clearTemplateChannels(db_, templateId, error)) {
       break;
     }

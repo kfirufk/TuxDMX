@@ -41,7 +41,6 @@ The Learn/Template workflow is designed so you can test channels live while buil
 - Startup seed templates:
   - **AliExpress 60x3W RGB PAR**
   - **Mira Dye** (A-mode 13ch layout)
-  - automatic one-time migration: if an older `Mira Dye` layout is detected, it is preserved as **Mira Dye (D Mode Legacy)** and `Mira Dye` is updated to A-mode
 - `enttec-usb-pro` backend features:
   - serial-port scan
   - serial probe (`0x7E 0x0A 0x00 0x00 0xE7`)
@@ -54,6 +53,7 @@ The Learn/Template workflow is designed so you can test channels live while buil
 - Live control UI:
   - fixture cards with per-channel sliders (default)
   - optional knob mode toggle in toolbar
+  - light/dark theme toggle in toolbar (saved locally per browser)
   - server-side MIDI learn/clear per live control node (fixture channels, group controls, scene recall, reactive toggle)
   - performance hold buttons with smooth attack/release:
     - all-on lift

@@ -35,13 +35,9 @@ int main() {
   assert(miraIt->channels[0].name == "X axle");
   assert(miraIt->channels[0].kind == "pan");
   assert(miraIt->channels[12].name == "Macro function controls");
-
   const auto legacyIt = std::find_if(templates.begin(), templates.end(),
                                      [](const auto& t) { return t.name == "Mira Dye (D Mode Legacy)"; });
-  assert(legacyIt != templates.end());
-  assert(!legacyIt->channels.empty());
-  assert(legacyIt->channels[0].name == "Legacy D Dimmer");
-  assert(legacyIt->channels[0].kind == "dimmer");
+  assert(legacyIt == templates.end());
 
   assert(db.seedAliExpressRgbPar(error));
 
