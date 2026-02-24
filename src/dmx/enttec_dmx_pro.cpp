@@ -8,9 +8,14 @@
 #include <thread>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <setupapi.h>
 #include <windows.h>
+#include <winreg.h>
 #else
-#include <errno.h>
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/select.h>
 #include <termios.h>
@@ -29,6 +34,11 @@ constexpr std::uint8_t kEndByte = 0xE7;
 constexpr std::uint8_t kLabelGetWidgetParams = 0x03;
 constexpr std::uint8_t kLabelSetDmx = 0x06;
 constexpr std::uint8_t kLabelGetSerial = 0x0A;
+
+std::int64_t nowUnixMs() {
+  const auto now = std::chrono::system_clock::now();
+  return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+}
 
 #ifndef _WIN32
 bool readBytesWithTimeout(int fd, std::uint8_t* dst, std::size_t size, int timeoutMs) {
@@ -106,6 +116,63 @@ bool configureSerialPort(int fd) {
   tcflush(fd, TCIOFLUSH);
   return true;
 }
+
+#else
+std::vector<std::string> enumerateWindowsComPorts() {
+  std::vector<std::string> ports;
+
+  DWORD requiredGuids = 0;
+  if (!SetupDiClassGuidsFromNameA("Ports", nullptr, 0, &requiredGuids) || requiredGuids == 0) {
+    return ports;
+  }
+
+  std::vector<GUID> guids(requiredGuids);
+  if (!SetupDiClassGuidsFromNameA("Ports", guids.data(), static_cast<DWORD>(guids.size()), &requiredGuids)
+      || requiredGuids == 0) {
+    return ports;
+  }
+
+  for (DWORD guidIndex = 0; guidIndex < requiredGuids; ++guidIndex) {
+    HDEVINFO deviceInfoSet = SetupDiGetClassDevsA(&guids[guidIndex], nullptr, nullptr, DIGCF_PRESENT);
+    if (deviceInfoSet == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+
+    SP_DEVINFO_DATA devInfo{};
+    devInfo.cbSize = sizeof(SP_DEVINFO_DATA);
+
+    for (DWORD deviceIndex = 0; SetupDiEnumDeviceInfo(deviceInfoSet, deviceIndex, &devInfo); ++deviceIndex) {
+      HKEY deviceKey = SetupDiOpenDevRegKey(deviceInfoSet, &devInfo, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_QUERY_VALUE);
+      if (deviceKey == INVALID_HANDLE_VALUE) {
+        continue;
+      }
+
+      char portName[256] = {};
+      DWORD type = 0;
+      DWORD size = static_cast<DWORD>(sizeof(portName));
+      const LONG query = RegQueryValueExA(deviceKey, "PortName", nullptr, &type, reinterpret_cast<LPBYTE>(portName), &size);
+      RegCloseKey(deviceKey);
+
+      if (query != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) {
+        continue;
+      }
+
+      const std::string trimmed = trim(portName);
+      if (trimmed.empty()) {
+        continue;
+      }
+      if (toLower(trimmed).rfind("com", 0) == 0) {
+        ports.push_back(trimmed);
+      }
+    }
+
+    SetupDiDestroyDeviceInfoList(deviceInfoSet);
+  }
+
+  std::sort(ports.begin(), ports.end());
+  ports.erase(std::unique(ports.begin(), ports.end()), ports.end());
+  return ports;
+}
 #endif
 
 std::string parseSerialHex(const std::vector<std::uint8_t>& payload) {
@@ -139,16 +206,45 @@ std::string makeDeviceName(std::string_view endpoint, std::string_view serial) {
   return "ENTTEC DMX USB Pro";
 }
 
+int nativeErrorCode() {
+#ifdef _WIN32
+  return static_cast<int>(GetLastError());
+#else
+  return errno;
+#endif
+}
+
 }  // namespace
 
 EnttecDmxPro::EnttecDmxPro() {
   status_.backend = backendName();
   status_.preferredDeviceId = preferredDeviceId_;
+  status_.writeRetryLimit = writeRetryLimit_;
+  status_.probeTimeoutMs = probeTimeoutMs_;
+  status_.serialReadTimeoutMs = serialReadTimeoutMs_;
+  status_.strictPreferredDevice = strictPreferredDevice_;
+  status_.transportState = "disconnected";
 }
 
 EnttecDmxPro::~EnttecDmxPro() { disconnect(); }
 
 std::string EnttecDmxPro::backendName() const { return "enttec-usb-pro"; }
+
+void EnttecDmxPro::setLastErrorUnlocked(std::string stage, std::string message, int code, std::string endpoint) {
+  status_.lastErrorStage = std::move(stage);
+  status_.lastError = std::move(message);
+  status_.lastErrorCode = code;
+  status_.lastErrorEndpoint = std::move(endpoint);
+  status_.lastErrorUnixMs = nowUnixMs();
+}
+
+void EnttecDmxPro::clearLastErrorUnlocked() {
+  status_.lastError.clear();
+  status_.lastErrorStage.clear();
+  status_.lastErrorCode = 0;
+  status_.lastErrorEndpoint.clear();
+  status_.lastErrorUnixMs = 0;
+}
 
 std::string EnttecDmxPro::deviceIdFor(std::string_view port, std::string_view serial) {
   const std::string trimmedSerial = trim(serial);
@@ -190,9 +286,7 @@ std::vector<std::string> EnttecDmxPro::candidatePorts() const {
   std::vector<std::string> candidates;
 
 #ifdef _WIN32
-  for (int i = 1; i <= 64; ++i) {
-    candidates.push_back("COM" + std::to_string(i));
-  }
+  candidates = enumerateWindowsComPorts();
 #else
   const std::array<std::string, 6> prefixes = {
       "ttyUSB", "ttyACM", "cu.usbserial", "tty.usbserial", "cu.usbmodem", "tty.usbmodem"};
@@ -283,8 +377,8 @@ bool EnttecDmxPro::readFrame(std::uint8_t expectedLabel, std::vector<std::uint8_
 
   std::array<std::uint8_t, 3> header{};
   DWORD read = 0;
-  if (!ReadFile(static_cast<HANDLE>(handle_), header.data(), static_cast<DWORD>(header.size()), &read, nullptr) ||
-      read != header.size()) {
+  if (!ReadFile(static_cast<HANDLE>(handle_), header.data(), static_cast<DWORD>(header.size()), &read, nullptr)
+      || read != header.size()) {
     return false;
   }
 
@@ -293,8 +387,7 @@ bool EnttecDmxPro::readFrame(std::uint8_t expectedLabel, std::vector<std::uint8_
   payload.resize(length);
 
   if (length > 0) {
-    if (!ReadFile(static_cast<HANDLE>(handle_), payload.data(), static_cast<DWORD>(length), &read, nullptr) ||
-        read != length) {
+    if (!ReadFile(static_cast<HANDLE>(handle_), payload.data(), static_cast<DWORD>(length), &read, nullptr) || read != length) {
       return false;
     }
   }
@@ -348,12 +441,21 @@ bool EnttecDmxPro::readFrame(std::uint8_t expectedLabel, std::vector<std::uint8_
 #endif
 }
 
-bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& fwMajor, int& fwMinor,
+bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& fwMajor, int& fwMinor, int& errorCode,
                              std::string& error) {
+  int probeTimeoutMs = 350;
+  int serialReadTimeoutMs = 250;
+  {
+    std::scoped_lock lock(mutex_);
+    probeTimeoutMs = probeTimeoutMs_;
+    serialReadTimeoutMs = serialReadTimeoutMs_;
+  }
+
 #ifdef _WIN32
   const std::string path = "\\\\.\\" + port;
   HANDLE handle = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
   if (handle == INVALID_HANDLE_VALUE) {
+    errorCode = static_cast<int>(GetLastError());
     error = "Port open failed";
     return false;
   }
@@ -361,6 +463,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   DCB dcb{};
   dcb.DCBlength = sizeof(DCB);
   if (!GetCommState(handle, &dcb)) {
+    errorCode = static_cast<int>(GetLastError());
     CloseHandle(handle);
     error = "Failed to read serial settings";
     return false;
@@ -371,17 +474,18 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   dcb.Parity = NOPARITY;
   dcb.StopBits = ONESTOPBIT;
   if (!SetCommState(handle, &dcb)) {
+    errorCode = static_cast<int>(GetLastError());
     CloseHandle(handle);
     error = "Failed to apply serial settings";
     return false;
   }
 
   COMMTIMEOUTS timeouts{};
-  timeouts.ReadIntervalTimeout = 20;
-  timeouts.ReadTotalTimeoutConstant = 50;
-  timeouts.ReadTotalTimeoutMultiplier = 5;
-  timeouts.WriteTotalTimeoutConstant = 50;
-  timeouts.WriteTotalTimeoutMultiplier = 5;
+  timeouts.ReadIntervalTimeout = static_cast<DWORD>(std::clamp(serialReadTimeoutMs / 5, 5, 60));
+  timeouts.ReadTotalTimeoutConstant = static_cast<DWORD>(std::max(20, serialReadTimeoutMs));
+  timeouts.ReadTotalTimeoutMultiplier = 3;
+  timeouts.WriteTotalTimeoutConstant = static_cast<DWORD>(std::max(20, serialReadTimeoutMs));
+  timeouts.WriteTotalTimeoutMultiplier = 3;
   SetCommTimeouts(handle, &timeouts);
 
   {
@@ -394,17 +498,20 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
 #else
   const int fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
   if (fd < 0) {
+    errorCode = errno;
     error = "Port open failed";
     return false;
   }
 
   if (!configureSerialPort(fd)) {
+    errorCode = errno;
     close(fd);
     error = "Failed to configure serial port";
     return false;
   }
 
   if (fcntl(fd, F_SETFL, 0) != 0) {
+    errorCode = errno;
     close(fd);
     error = "Failed to set serial blocking mode";
     return false;
@@ -421,13 +528,15 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
 
   const std::array<std::uint8_t, 5> serialReq = {kStartByte, kLabelGetSerial, 0x00, 0x00, kEndByte};
   if (!writeBytes(serialReq.data(), serialReq.size())) {
+    errorCode = nativeErrorCode();
     error = "Failed to write serial request";
     disconnect();
     return false;
   }
 
   std::vector<std::uint8_t> serialPayload;
-  if (!readFrame(kLabelGetSerial, serialPayload, 300)) {
+  if (!readFrame(kLabelGetSerial, serialPayload, probeTimeoutMs)) {
+    errorCode = nativeErrorCode();
     error = "No valid serial response";
     disconnect();
     return false;
@@ -437,7 +546,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   writeBytes(widgetReq.data(), widgetReq.size());
 
   std::vector<std::uint8_t> widgetPayload;
-  if (readFrame(kLabelGetWidgetParams, widgetPayload, 200) && widgetPayload.size() >= 2) {
+  if (readFrame(kLabelGetWidgetParams, widgetPayload, std::max(80, probeTimeoutMs / 2)) && widgetPayload.size() >= 2) {
     fwMajor = static_cast<int>(widgetPayload[0]);
     fwMinor = static_cast<int>(widgetPayload[1]);
   } else {
@@ -446,6 +555,7 @@ bool EnttecDmxPro::probePort(const std::string& port, std::string& serial, int& 
   }
 
   serial = parseSerialHex(serialPayload);
+  errorCode = 0;
   error.clear();
   return true;
 }
@@ -468,8 +578,9 @@ void EnttecDmxPro::refreshDevicesUnlocked(std::string& error) {
     std::string probeError;
     int fwMajor = 0;
     int fwMinor = 0;
+    int probeCode = 0;
 
-    if (probePort(port, serial, fwMajor, fwMinor, probeError)) {
+    if (probePort(port, serial, fwMajor, fwMinor, probeCode, probeError)) {
       DmxOutputDevice device;
       device.id = deviceIdFor(port, serial);
       device.name = makeDeviceName(port, serial);
@@ -512,6 +623,7 @@ bool EnttecDmxPro::discoverAndConnect() {
     if (status_.connected) {
       return true;
     }
+    status_.lastConnectAttemptUnixMs = nowUnixMs();
   }
 
   std::string scanError;
@@ -519,10 +631,12 @@ bool EnttecDmxPro::discoverAndConnect() {
 
   std::vector<DmxOutputDevice> availableDevices;
   std::string preferredId;
+  bool strictPreferred = true;
   {
     std::scoped_lock lock(mutex_);
     availableDevices = devices_;
     preferredId = preferredDeviceId_;
+    strictPreferred = strictPreferredDevice_;
   }
 
   if (availableDevices.empty()) {
@@ -532,7 +646,8 @@ bool EnttecDmxPro::discoverAndConnect() {
     status_.endpoint.clear();
     status_.activeDeviceId.clear();
     status_.preferredDeviceId = preferredDeviceId_;
-    status_.lastError = scanError.empty() ? "No compatible DMX USB Pro devices found" : scanError;
+    status_.transportState = "disconnected";
+    setLastErrorUnlocked("scan", scanError.empty() ? "No compatible DMX USB Pro devices found" : scanError);
     return false;
   }
 
@@ -541,30 +656,37 @@ bool EnttecDmxPro::discoverAndConnect() {
     const auto it = std::find_if(availableDevices.begin(), availableDevices.end(),
                                  [&preferredId](const DmxOutputDevice& device) { return deviceIdMatches(device, preferredId); });
     if (it == availableDevices.end()) {
-      std::scoped_lock lock(mutex_);
-      status_.backend = backendName();
-      status_.connected = false;
-      status_.endpoint.clear();
-      status_.activeDeviceId.clear();
-      status_.preferredDeviceId = preferredDeviceId_;
-      status_.lastError = "Preferred DMX device not found: " + preferredId;
-      return false;
+      if (strictPreferred) {
+        std::scoped_lock lock(mutex_);
+        status_.backend = backendName();
+        status_.connected = false;
+        status_.endpoint.clear();
+        status_.activeDeviceId.clear();
+        status_.preferredDeviceId = preferredDeviceId_;
+        status_.transportState = "disconnected";
+        setLastErrorUnlocked("selection", "Preferred DMX device not found: " + preferredId);
+        return false;
+      }
+      logMessage(LogLevel::Warn, "dmx", "Preferred device not found, falling back to first detected device: " + preferredId);
+    } else {
+      selected = *it;
     }
-    selected = *it;
   }
 
   std::string serial;
   std::string probeError;
   int fwMajor = 0;
   int fwMinor = 0;
-  if (!probePort(selected.endpoint, serial, fwMajor, fwMinor, probeError)) {
+  int probeCode = 0;
+  if (!probePort(selected.endpoint, serial, fwMajor, fwMinor, probeCode, probeError)) {
     std::scoped_lock lock(mutex_);
     status_.backend = backendName();
     status_.connected = false;
     status_.endpoint.clear();
     status_.activeDeviceId.clear();
     status_.preferredDeviceId = preferredDeviceId_;
-    status_.lastError = probeError.empty() ? "Port probe failed" : probeError;
+    status_.transportState = "disconnected";
+    setLastErrorUnlocked("probe", probeError.empty() ? "Port probe failed" : probeError, probeCode, selected.endpoint);
     return false;
   }
 
@@ -580,7 +702,8 @@ bool EnttecDmxPro::discoverAndConnect() {
     status_.serial = serial;
     status_.firmwareMajor = fwMajor;
     status_.firmwareMinor = fwMinor;
-    status_.lastError.clear();
+    status_.transportState = "connected";
+    clearLastErrorUnlocked();
     consecutiveWriteFailures_ = 0;
 
     bool foundConnected = false;
@@ -630,6 +753,7 @@ void EnttecDmxPro::disconnect() {
   status_.serial.clear();
   status_.firmwareMajor = 0;
   status_.firmwareMinor = 0;
+  status_.transportState = "disconnected";
   for (auto& device : devices_) {
     device.connected = false;
   }
@@ -655,19 +779,24 @@ bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
 
   if (!writeBytes(frame.data(), frame.size())) {
     ++consecutiveWriteFailures_;
+    const int errorCode = nativeErrorCode();
+
     if (consecutiveWriteFailures_ < writeRetryLimit_) {
-      status_.lastError =
-          "DMX write failed (" + std::to_string(consecutiveWriteFailures_) + "/" + std::to_string(writeRetryLimit_)
-          + "), retrying";
-      logMessage(LogLevel::Warn, "dmx", status_.lastError);
+      const std::string error = "DMX write failed (" + std::to_string(consecutiveWriteFailures_) + "/"
+                                + std::to_string(writeRetryLimit_) + "), retrying";
+      setLastErrorUnlocked("write", error, errorCode, status_.endpoint);
+      logMessage(LogLevel::Warn, "dmx", error);
+      status_.transportState = "degraded";
       return false;
     }
 
+    const std::string error = "DMX write failed repeatedly (" + std::to_string(consecutiveWriteFailures_) + " tries), reconnecting";
+    setLastErrorUnlocked("write", error, errorCode, status_.endpoint);
+    logMessage(LogLevel::Error, "dmx", error);
+
     status_.connected = false;
     status_.activeDeviceId.clear();
-    status_.lastError =
-        "DMX write failed repeatedly (" + std::to_string(consecutiveWriteFailures_) + " tries), reconnecting";
-    logMessage(LogLevel::Error, "dmx", status_.lastError);
+    status_.transportState = "degraded";
 #ifdef _WIN32
     if (handle_ != nullptr) {
       CloseHandle(static_cast<HANDLE>(handle_));
@@ -687,18 +816,56 @@ bool EnttecDmxPro::sendUniverse(const std::array<std::uint8_t, 512>& channels) {
   }
 
   consecutiveWriteFailures_ = 0;
+  status_.lastSuccessfulFrameUnixMs = nowUnixMs();
+  status_.transportState = "connected";
+  if (status_.lastErrorStage == "write") {
+    clearLastErrorUnlocked();
+  }
   return true;
 }
 
 void EnttecDmxPro::setWriteRetryLimit(int limit) {
   std::scoped_lock lock(mutex_);
   writeRetryLimit_ = std::clamp(limit, 1, 200);
-  status_.lastError.clear();
+  status_.writeRetryLimit = writeRetryLimit_;
 }
 
 int EnttecDmxPro::writeRetryLimit() const {
   std::scoped_lock lock(mutex_);
   return writeRetryLimit_;
+}
+
+void EnttecDmxPro::setProbeTimeoutMs(int timeoutMs) {
+  std::scoped_lock lock(mutex_);
+  probeTimeoutMs_ = std::clamp(timeoutMs, 50, 5000);
+  status_.probeTimeoutMs = probeTimeoutMs_;
+}
+
+int EnttecDmxPro::probeTimeoutMs() const {
+  std::scoped_lock lock(mutex_);
+  return probeTimeoutMs_;
+}
+
+void EnttecDmxPro::setSerialReadTimeoutMs(int timeoutMs) {
+  std::scoped_lock lock(mutex_);
+  serialReadTimeoutMs_ = std::clamp(timeoutMs, 20, 5000);
+  status_.serialReadTimeoutMs = serialReadTimeoutMs_;
+}
+
+int EnttecDmxPro::serialReadTimeoutMs() const {
+  std::scoped_lock lock(mutex_);
+  return serialReadTimeoutMs_;
+}
+
+void EnttecDmxPro::setStrictPreferredDevice(bool strict) {
+  std::scoped_lock lock(mutex_);
+  strictPreferredDevice_ = strict;
+  status_.strictPreferredDevice = strictPreferredDevice_;
+}
+
+bool EnttecDmxPro::strictPreferredDevice() const {
+  std::scoped_lock lock(mutex_);
+  return strictPreferredDevice_;
 }
 
 std::vector<DmxOutputDevice> EnttecDmxPro::devices() const {
@@ -743,7 +910,7 @@ void EnttecDmxPro::refreshDevices() {
   if (!error.empty()) {
     std::scoped_lock lock(mutex_);
     if (!status_.connected) {
-      status_.lastError = error;
+      setLastErrorUnlocked("scan", error);
     }
   }
 }
@@ -770,6 +937,9 @@ DmxDeviceStatus EnttecDmxPro::status() const {
   out.preferredDeviceId = preferredDeviceId_;
   out.writeRetryLimit = writeRetryLimit_;
   out.consecutiveWriteFailures = consecutiveWriteFailures_;
+  out.probeTimeoutMs = probeTimeoutMs_;
+  out.serialReadTimeoutMs = serialReadTimeoutMs_;
+  out.strictPreferredDevice = strictPreferredDevice_;
   return out;
 }
 

@@ -57,6 +57,32 @@
           <button id="apply-dmx-retry-btn" class="btn ghost" type="button">Apply Retries</button>
         </div>
         <p id="dmx-retry-status">Retries: -- • Fail streak: --</p>
+        <div class="transport-grid">
+          <label>
+            Frame ms
+            <input id="dmx-frame-interval" type="number" min="5" max="1000" value="33" aria-label="DMX frame interval">
+          </label>
+          <label>
+            Reconnect base ms
+            <input id="dmx-reconnect-base" type="number" min="100" max="30000" value="800" aria-label="DMX reconnect base">
+          </label>
+          <label>
+            Probe timeout ms
+            <input id="dmx-probe-timeout" type="number" min="50" max="5000" value="350" aria-label="DMX probe timeout">
+          </label>
+          <label>
+            Read timeout ms
+            <input id="dmx-serial-timeout" type="number" min="20" max="5000" value="250" aria-label="DMX serial read timeout">
+          </label>
+          <label class="transport-check">
+            <input id="dmx-strict-preferred" type="checkbox" checked>
+            Strict preferred-device mode
+          </label>
+        </div>
+        <div class="inline-controls">
+          <button id="apply-dmx-transport-btn" class="btn ghost" type="button">Apply Transport</button>
+        </div>
+        <p id="dmx-transport-status">Transport: --</p>
       </article>
       <article>
         <h2>Engine</h2>

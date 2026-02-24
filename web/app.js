@@ -85,6 +85,13 @@ const els = {
   dmxRetryLimit: document.getElementById('dmx-retry-limit'),
   applyDmxRetryBtn: document.getElementById('apply-dmx-retry-btn'),
   dmxRetryStatus: document.getElementById('dmx-retry-status'),
+  dmxFrameInterval: document.getElementById('dmx-frame-interval'),
+  dmxReconnectBase: document.getElementById('dmx-reconnect-base'),
+  dmxProbeTimeout: document.getElementById('dmx-probe-timeout'),
+  dmxSerialTimeout: document.getElementById('dmx-serial-timeout'),
+  dmxStrictPreferred: document.getElementById('dmx-strict-preferred'),
+  applyDmxTransportBtn: document.getElementById('apply-dmx-transport-btn'),
+  dmxTransportStatus: document.getElementById('dmx-transport-status'),
   audioBackend: document.getElementById('audio-backend'),
   audioEnergy: document.getElementById('audio-energy'),
   audioBass: document.getElementById('audio-bass'),
@@ -293,6 +300,14 @@ const LAYOUT_STORAGE_KEY = 'tuxdmx.layout.v1';
 const MIDI_REACTIVE_CONTROL_ID = 'audio:reactive';
 const PERFORMANCE_STORAGE_KEY = 'tuxdmx.performance.v1';
 const DMX_DEVICE_AUTO_VALUE = '__auto__';
+
+function formatUnixMs(ms) {
+  const numeric = Number(ms || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '--';
+  const date = new Date(numeric);
+  if (Number.isNaN(date.getTime())) return '--';
+  return date.toLocaleTimeString();
+}
 
 function midiInputNameById(inputId) {
   const input = (state.midi.inputs || []).find((item) => item.id === inputId);
@@ -1442,14 +1457,15 @@ function renderStatus(dmx, audio, midi = null) {
   const preferredDeviceId = String(dmx.preferredDeviceId || '');
   const activeDeviceId = String(dmx.activeDeviceId || '');
 
+  const transportState = String(dmx.transportState || (dmx.connected ? 'connected' : 'disconnected'));
   if (dmx.connected) {
     const connectedText = dmx.serial
-      ? `${dmxBackend} connected (${dmx.serial})`
-      : `${dmxBackend} connected`;
+      ? `${dmxBackend} connected (${dmx.serial}) • ${transportState}`
+      : `${dmxBackend} connected • ${transportState}`;
     els.deviceStatus.textContent = connectedText;
     els.deviceStatus.style.color = '#0b7266';
   } else {
-    els.deviceStatus.textContent = `Device not connected. ${dmx.lastError || ''}`.trim();
+    els.deviceStatus.textContent = `Device not connected (${transportState}). ${dmx.lastError || ''}`.trim();
     els.deviceStatus.style.color = '#b7432b';
   }
 
@@ -1521,11 +1537,46 @@ function renderStatus(dmx, audio, midi = null) {
   if (els.dmxRetryStatus) {
     const retries = Number(dmx.writeRetryLimit || 10);
     const failStreak = Number(dmx.consecutiveWriteFailures || 0);
-    els.dmxRetryStatus.textContent = `Retries: ${retries} • Fail streak: ${failStreak}`;
+    const reconnectAttempt = Number(dmx.reconnectAttempt || 0);
+    const reconnectBackoff = Number(dmx.reconnectBackoffMs || 0);
+    const reconnectText = reconnectAttempt > 0 ? ` • Reconnect: #${reconnectAttempt} (${reconnectBackoff}ms)` : '';
+    els.dmxRetryStatus.textContent = `Retries: ${retries} • Fail streak: ${failStreak}${reconnectText}`;
   }
   if (els.dmxRetryLimit && document.activeElement !== els.dmxRetryLimit) {
     const retries = Number(dmx.writeRetryLimit || 10);
     els.dmxRetryLimit.value = String(Math.max(1, Math.min(200, retries)));
+  }
+  if (els.dmxFrameInterval && document.activeElement !== els.dmxFrameInterval) {
+    els.dmxFrameInterval.value = String(Math.max(5, Math.min(1000, Number(dmx.frameIntervalMs || 33))));
+  }
+  if (els.dmxReconnectBase && document.activeElement !== els.dmxReconnectBase) {
+    els.dmxReconnectBase.value = String(Math.max(100, Math.min(30000, Number(dmx.reconnectBaseMs || 800))));
+  }
+  if (els.dmxProbeTimeout && document.activeElement !== els.dmxProbeTimeout) {
+    els.dmxProbeTimeout.value = String(Math.max(50, Math.min(5000, Number(dmx.probeTimeoutMs || 350))));
+  }
+  if (els.dmxSerialTimeout && document.activeElement !== els.dmxSerialTimeout) {
+    els.dmxSerialTimeout.value = String(Math.max(20, Math.min(5000, Number(dmx.serialReadTimeoutMs || 250))));
+  }
+  if (els.dmxStrictPreferred && document.activeElement !== els.dmxStrictPreferred) {
+    els.dmxStrictPreferred.checked = Boolean(dmx.strictPreferredDevice ?? true);
+  }
+  if (els.dmxTransportStatus) {
+    const lastConnect = formatUnixMs(dmx.lastConnectAttemptUnixMs);
+    const lastFrame = formatUnixMs(dmx.lastSuccessfulFrameUnixMs);
+    const lastErrorStage = String(dmx.lastErrorStage || '').trim();
+    const lastErrorCode = Number(dmx.lastErrorCode || 0);
+    const lastErrorEndpoint = String(dmx.lastErrorEndpoint || '').trim();
+    const errorMeta = [];
+    if (lastErrorStage) errorMeta.push(lastErrorStage);
+    if (lastErrorEndpoint) errorMeta.push(lastErrorEndpoint);
+    if (lastErrorCode > 0) errorMeta.push(`code ${lastErrorCode}`);
+    const lastErrorMessage = String(dmx.lastError || '').trim();
+    const errorSuffix = errorMeta.length || lastErrorMessage
+      ? ` • Last error: ${[...errorMeta, lastErrorMessage].filter(Boolean).join(' @ ')}`
+      : '';
+    els.dmxTransportStatus.textContent =
+      `Transport: ${transportState} • Last connect: ${lastConnect} • Last frame: ${lastFrame}${errorSuffix}`;
   }
   els.audioBackend.textContent = `Audio Backend: ${audio.backend || '--'}`;
   const liveEnergy = Math.max(0, Math.min(1, Number(audio.energy || 0)));
@@ -2973,6 +3024,52 @@ async function applyDmxRetryLimit() {
   }
 }
 
+async function applyDmxTransportSettings() {
+  if (!els.dmxFrameInterval || !els.dmxReconnectBase || !els.dmxProbeTimeout || !els.dmxSerialTimeout || !els.dmxStrictPreferred) {
+    return;
+  }
+
+  const frameIntervalMs = Number(els.dmxFrameInterval.value || 33);
+  const reconnectBaseMs = Number(els.dmxReconnectBase.value || 800);
+  const probeTimeoutMs = Number(els.dmxProbeTimeout.value || 350);
+  const serialReadTimeoutMs = Number(els.dmxSerialTimeout.value || 250);
+  const strictPreferredDevice = Boolean(els.dmxStrictPreferred.checked);
+
+  if (!Number.isFinite(frameIntervalMs) || frameIntervalMs < 5 || frameIntervalMs > 1000) {
+    showToast('Frame interval must be between 5 and 1000 ms', 'error');
+    return;
+  }
+  if (!Number.isFinite(reconnectBaseMs) || reconnectBaseMs < 100 || reconnectBaseMs > 30000) {
+    showToast('Reconnect base must be between 100 and 30000 ms', 'error');
+    return;
+  }
+  if (!Number.isFinite(probeTimeoutMs) || probeTimeoutMs < 50 || probeTimeoutMs > 5000) {
+    showToast('Probe timeout must be between 50 and 5000 ms', 'error');
+    return;
+  }
+  if (!Number.isFinite(serialReadTimeoutMs) || serialReadTimeoutMs < 20 || serialReadTimeoutMs > 5000) {
+    showToast('Read timeout must be between 20 and 5000 ms', 'error');
+    return;
+  }
+
+  try {
+    await api('/api/dmx/transport-settings', {
+      method: 'POST',
+      body: {
+        frame_interval_ms: String(Math.round(frameIntervalMs)),
+        reconnect_base_ms: String(Math.round(reconnectBaseMs)),
+        probe_timeout_ms: String(Math.round(probeTimeoutMs)),
+        serial_read_timeout_ms: String(Math.round(serialReadTimeoutMs)),
+        strict_preferred_device: strictPreferredDevice ? 'true' : 'false',
+      },
+    });
+    await loadState({ silent: true });
+    showToast('DMX transport settings updated');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
 async function clearDebugLogs() {
   try {
     await api('/api/logs/clear', { method: 'POST' });
@@ -3187,6 +3284,20 @@ function installEventListeners() {
       }
     });
   }
+  if (els.applyDmxTransportBtn) {
+    els.applyDmxTransportBtn.addEventListener('click', () => {
+      applyDmxTransportSettings().catch((err) => showToast(err.message, 'error'));
+    });
+  }
+  [els.dmxFrameInterval, els.dmxReconnectBase, els.dmxProbeTimeout, els.dmxSerialTimeout].forEach((inputEl) => {
+    if (!inputEl) return;
+    inputEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        applyDmxTransportSettings().catch((err) => showToast(err.message, 'error'));
+      }
+    });
+  });
   if (els.applyDmxDeviceBtn) {
     els.applyDmxDeviceBtn.addEventListener('click', () => {
       applyDmxDeviceSelection().catch((err) => showToast(err.message, 'error'));

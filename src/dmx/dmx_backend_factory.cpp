@@ -48,6 +48,36 @@ class NullDmxOutputBackend final : public DmxOutputBackend {
     return status_.writeRetryLimit;
   }
 
+  void setProbeTimeoutMs(int timeoutMs) override {
+    std::scoped_lock lock(mutex_);
+    status_.probeTimeoutMs = std::clamp(timeoutMs, 50, 5000);
+  }
+
+  int probeTimeoutMs() const override {
+    std::scoped_lock lock(mutex_);
+    return status_.probeTimeoutMs;
+  }
+
+  void setSerialReadTimeoutMs(int timeoutMs) override {
+    std::scoped_lock lock(mutex_);
+    status_.serialReadTimeoutMs = std::clamp(timeoutMs, 20, 5000);
+  }
+
+  int serialReadTimeoutMs() const override {
+    std::scoped_lock lock(mutex_);
+    return status_.serialReadTimeoutMs;
+  }
+
+  void setStrictPreferredDevice(bool strict) override {
+    std::scoped_lock lock(mutex_);
+    status_.strictPreferredDevice = strict;
+  }
+
+  bool strictPreferredDevice() const override {
+    std::scoped_lock lock(mutex_);
+    return status_.strictPreferredDevice;
+  }
+
   std::vector<DmxOutputDevice> devices() const override { return {}; }
 
   void refreshDevices() override {}

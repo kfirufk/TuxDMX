@@ -56,7 +56,7 @@ if(APPLE AND NOT RTMIDI_FOUND)
 endif()
 
 if(WIN32)
-  target_link_libraries(tuxdmx PRIVATE ws2_32)
+  target_link_libraries(tuxdmx PRIVATE ws2_32 setupapi)
 endif()
 
 if(TUXDMX_ENABLE_TESTS)
@@ -65,4 +65,17 @@ if(TUXDMX_ENABLE_TESTS)
   target_include_directories(tuxdmx_db_tests PRIVATE src/include)
   target_link_libraries(tuxdmx_db_tests PRIVATE SQLite::SQLite3)
   add_test(NAME tuxdmx_db_tests COMMAND tuxdmx_db_tests)
+
+  add_executable(tuxdmx_dmx_engine_tests
+      tests/test_dmx_engine.cpp
+      src/dmx/dmx_engine.cpp
+      src/dmx/dmx_backend_factory.cpp
+      src/dmx/enttec_dmx_pro.cpp
+      src/logger/logger.cpp)
+  target_include_directories(tuxdmx_dmx_engine_tests PRIVATE src/include)
+  target_link_libraries(tuxdmx_dmx_engine_tests PRIVATE Threads::Threads)
+  if(WIN32)
+    target_link_libraries(tuxdmx_dmx_engine_tests PRIVATE ws2_32 setupapi)
+  endif()
+  add_test(NAME tuxdmx_dmx_engine_tests COMMAND tuxdmx_dmx_engine_tests)
 endif()

@@ -63,6 +63,14 @@ struct DmxOutputDevice {
 struct DmxDeviceStatus {
   std::string backend = "unknown";
   bool connected = false;
+  std::string transportState = "disconnected";
+  int reconnectAttempt = 0;
+  int reconnectBackoffMs = 0;
+  int reconnectBaseMs = 800;
+  int frameIntervalMs = 33;
+  int probeTimeoutMs = 350;
+  int serialReadTimeoutMs = 250;
+  bool strictPreferredDevice = true;
   std::string endpoint;
   std::string activeDeviceId;
   std::string preferredDeviceId;
@@ -71,6 +79,12 @@ struct DmxDeviceStatus {
   int firmwareMajor = 0;
   int firmwareMinor = 0;
   std::string lastError;
+  std::string lastErrorStage;
+  int lastErrorCode = 0;
+  std::string lastErrorEndpoint;
+  std::int64_t lastErrorUnixMs = 0;
+  std::int64_t lastConnectAttemptUnixMs = 0;
+  std::int64_t lastSuccessfulFrameUnixMs = 0;
   int writeRetryLimit = 10;
   int consecutiveWriteFailures = 0;
 };

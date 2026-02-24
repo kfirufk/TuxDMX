@@ -19,6 +19,12 @@ class DmxOutputBackend {
   virtual bool sendUniverse(const std::array<std::uint8_t, 512>& channels) = 0;
   virtual void setWriteRetryLimit(int limit) = 0;
   virtual int writeRetryLimit() const = 0;
+  virtual void setProbeTimeoutMs(int timeoutMs) = 0;
+  virtual int probeTimeoutMs() const = 0;
+  virtual void setSerialReadTimeoutMs(int timeoutMs) = 0;
+  virtual int serialReadTimeoutMs() const = 0;
+  virtual void setStrictPreferredDevice(bool strict) = 0;
+  virtual bool strictPreferredDevice() const = 0;
   virtual std::vector<DmxOutputDevice> devices() const = 0;
   virtual void refreshDevices() = 0;
   virtual void setPreferredDeviceId(std::string deviceId) = 0;

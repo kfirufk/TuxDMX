@@ -77,6 +77,33 @@ bool parseBoolLike(const std::unordered_map<std::string, std::string>& form, con
   return lowered == "1" || lowered == "true" || lowered == "on" || lowered == "yes";
 }
 
+bool parseBoolText(std::string_view raw, bool& value) {
+  const auto lowered = toLower(trim(raw));
+  if (lowered == "1" || lowered == "true" || lowered == "on" || lowered == "yes") {
+    value = true;
+    return true;
+  }
+  if (lowered == "0" || lowered == "false" || lowered == "off" || lowered == "no") {
+    value = false;
+    return true;
+  }
+  return false;
+}
+
+bool getRequiredBool(const std::unordered_map<std::string, std::string>& form, const std::string& key, bool& value,
+                     std::string& error) {
+  auto it = form.find(key);
+  if (it == form.end()) {
+    error = "Missing field: " + key;
+    return false;
+  }
+  if (!parseBoolText(it->second, value)) {
+    error = "Invalid boolean field: " + key;
+    return false;
+  }
+  return true;
+}
+
 std::string jsonBool(bool value) { return value ? "true" : "false"; }
 
 int midpoint(const ChannelRange& range) {
@@ -584,6 +611,87 @@ bool AppController::initialize(std::string& error) {
     }
   }
 
+  {
+    std::string settingValue;
+    std::string settingError;
+
+    if (db_.getSetting("dmx.write_retry_limit", settingValue, settingError)) {
+      int retries = 0;
+      if (parseInt(trim(settingValue), retries)) {
+        dmx_.setWriteRetryLimit(retries);
+      } else {
+        logMessage(LogLevel::Warn, "dmx", "Ignoring invalid dmx.write_retry_limit setting: " + settingValue);
+      }
+    } else if (!settingError.empty()) {
+      logMessage(LogLevel::Warn, "dmx", "Failed to load dmx.write_retry_limit: " + settingError);
+    }
+
+    settingValue.clear();
+    settingError.clear();
+    if (db_.getSetting("dmx.frame_interval_ms", settingValue, settingError)) {
+      int value = 0;
+      if (parseInt(trim(settingValue), value)) {
+        dmx_.setFrameIntervalMs(value);
+      } else {
+        logMessage(LogLevel::Warn, "dmx", "Ignoring invalid dmx.frame_interval_ms setting: " + settingValue);
+      }
+    } else if (!settingError.empty()) {
+      logMessage(LogLevel::Warn, "dmx", "Failed to load dmx.frame_interval_ms: " + settingError);
+    }
+
+    settingValue.clear();
+    settingError.clear();
+    if (db_.getSetting("dmx.reconnect_base_ms", settingValue, settingError)) {
+      int value = 0;
+      if (parseInt(trim(settingValue), value)) {
+        dmx_.setReconnectBaseMs(value);
+      } else {
+        logMessage(LogLevel::Warn, "dmx", "Ignoring invalid dmx.reconnect_base_ms setting: " + settingValue);
+      }
+    } else if (!settingError.empty()) {
+      logMessage(LogLevel::Warn, "dmx", "Failed to load dmx.reconnect_base_ms: " + settingError);
+    }
+
+    settingValue.clear();
+    settingError.clear();
+    if (db_.getSetting("dmx.probe_timeout_ms", settingValue, settingError)) {
+      int value = 0;
+      if (parseInt(trim(settingValue), value)) {
+        dmx_.setProbeTimeoutMs(value);
+      } else {
+        logMessage(LogLevel::Warn, "dmx", "Ignoring invalid dmx.probe_timeout_ms setting: " + settingValue);
+      }
+    } else if (!settingError.empty()) {
+      logMessage(LogLevel::Warn, "dmx", "Failed to load dmx.probe_timeout_ms: " + settingError);
+    }
+
+    settingValue.clear();
+    settingError.clear();
+    if (db_.getSetting("dmx.serial_read_timeout_ms", settingValue, settingError)) {
+      int value = 0;
+      if (parseInt(trim(settingValue), value)) {
+        dmx_.setSerialReadTimeoutMs(value);
+      } else {
+        logMessage(LogLevel::Warn, "dmx", "Ignoring invalid dmx.serial_read_timeout_ms setting: " + settingValue);
+      }
+    } else if (!settingError.empty()) {
+      logMessage(LogLevel::Warn, "dmx", "Failed to load dmx.serial_read_timeout_ms: " + settingError);
+    }
+
+    settingValue.clear();
+    settingError.clear();
+    if (db_.getSetting("dmx.strict_preferred_device", settingValue, settingError)) {
+      bool strict = true;
+      if (parseBoolText(settingValue, strict)) {
+        dmx_.setStrictPreferredDevice(strict);
+      } else {
+        logMessage(LogLevel::Warn, "dmx", "Ignoring invalid dmx.strict_preferred_device setting: " + settingValue);
+      }
+    } else if (!settingError.empty()) {
+      logMessage(LogLevel::Warn, "dmx", "Failed to load dmx.strict_preferred_device: " + settingError);
+    }
+  }
+
   dmx_.refreshDevices();
   rebuildAllUniversesFromDatabase();
 
@@ -724,6 +832,14 @@ std::string AppController::buildStatusJson() {
   ss << "{\"ok\":true,\"dmx\":{";
   ss << "\"backend\":\"" << jsonEscape(dmxStatus.backend) << "\",";
   ss << "\"connected\":" << jsonBool(dmxStatus.connected) << ',';
+  ss << "\"transportState\":\"" << jsonEscape(dmxStatus.transportState) << "\",";
+  ss << "\"reconnectAttempt\":" << dmxStatus.reconnectAttempt << ',';
+  ss << "\"reconnectBackoffMs\":" << dmxStatus.reconnectBackoffMs << ',';
+  ss << "\"reconnectBaseMs\":" << dmxStatus.reconnectBaseMs << ',';
+  ss << "\"frameIntervalMs\":" << dmxStatus.frameIntervalMs << ',';
+  ss << "\"probeTimeoutMs\":" << dmxStatus.probeTimeoutMs << ',';
+  ss << "\"serialReadTimeoutMs\":" << dmxStatus.serialReadTimeoutMs << ',';
+  ss << "\"strictPreferredDevice\":" << jsonBool(dmxStatus.strictPreferredDevice) << ',';
   ss << "\"endpoint\":\"" << jsonEscape(dmxStatus.endpoint) << "\",";
   ss << "\"activeDeviceId\":\"" << jsonEscape(dmxStatus.activeDeviceId) << "\",";
   ss << "\"preferredDeviceId\":\"" << jsonEscape(dmxStatus.preferredDeviceId) << "\",";
@@ -736,6 +852,12 @@ std::string AppController::buildStatusJson() {
   ss << "\"firmwareMajor\":" << dmxStatus.firmwareMajor << ',';
   ss << "\"firmwareMinor\":" << dmxStatus.firmwareMinor << ',';
   ss << "\"lastError\":\"" << jsonEscape(dmxStatus.lastError) << "\",";
+  ss << "\"lastErrorStage\":\"" << jsonEscape(dmxStatus.lastErrorStage) << "\",";
+  ss << "\"lastErrorCode\":" << dmxStatus.lastErrorCode << ',';
+  ss << "\"lastErrorEndpoint\":\"" << jsonEscape(dmxStatus.lastErrorEndpoint) << "\",";
+  ss << "\"lastErrorUnixMs\":" << dmxStatus.lastErrorUnixMs << ',';
+  ss << "\"lastConnectAttemptUnixMs\":" << dmxStatus.lastConnectAttemptUnixMs << ',';
+  ss << "\"lastSuccessfulFrameUnixMs\":" << dmxStatus.lastSuccessfulFrameUnixMs << ',';
   ss << "\"writeRetryLimit\":" << dmxStatus.writeRetryLimit << ',';
   ss << "\"consecutiveWriteFailures\":" << dmxStatus.consecutiveWriteFailures << ',';
   ss << "\"outputUniverse\":" << dmx_.outputUniverse() << ',';
@@ -842,6 +964,14 @@ std::string AppController::buildStateJson() {
   ss << ",\"dmx\":{";
   ss << "\"backend\":\"" << jsonEscape(dmxStatus.backend) << "\",";
   ss << "\"connected\":" << jsonBool(dmxStatus.connected) << ',';
+  ss << "\"transportState\":\"" << jsonEscape(dmxStatus.transportState) << "\",";
+  ss << "\"reconnectAttempt\":" << dmxStatus.reconnectAttempt << ',';
+  ss << "\"reconnectBackoffMs\":" << dmxStatus.reconnectBackoffMs << ',';
+  ss << "\"reconnectBaseMs\":" << dmxStatus.reconnectBaseMs << ',';
+  ss << "\"frameIntervalMs\":" << dmxStatus.frameIntervalMs << ',';
+  ss << "\"probeTimeoutMs\":" << dmxStatus.probeTimeoutMs << ',';
+  ss << "\"serialReadTimeoutMs\":" << dmxStatus.serialReadTimeoutMs << ',';
+  ss << "\"strictPreferredDevice\":" << jsonBool(dmxStatus.strictPreferredDevice) << ',';
   ss << "\"endpoint\":\"" << jsonEscape(dmxStatus.endpoint) << "\",";
   ss << "\"activeDeviceId\":\"" << jsonEscape(dmxStatus.activeDeviceId) << "\",";
   ss << "\"preferredDeviceId\":\"" << jsonEscape(dmxStatus.preferredDeviceId) << "\",";
@@ -854,6 +984,12 @@ std::string AppController::buildStateJson() {
   ss << "\"firmwareMajor\":" << dmxStatus.firmwareMajor << ',';
   ss << "\"firmwareMinor\":" << dmxStatus.firmwareMinor << ',';
   ss << "\"lastError\":\"" << jsonEscape(dmxStatus.lastError) << "\",";
+  ss << "\"lastErrorStage\":\"" << jsonEscape(dmxStatus.lastErrorStage) << "\",";
+  ss << "\"lastErrorCode\":" << dmxStatus.lastErrorCode << ',';
+  ss << "\"lastErrorEndpoint\":\"" << jsonEscape(dmxStatus.lastErrorEndpoint) << "\",";
+  ss << "\"lastErrorUnixMs\":" << dmxStatus.lastErrorUnixMs << ',';
+  ss << "\"lastConnectAttemptUnixMs\":" << dmxStatus.lastConnectAttemptUnixMs << ',';
+  ss << "\"lastSuccessfulFrameUnixMs\":" << dmxStatus.lastSuccessfulFrameUnixMs << ',';
   ss << "\"writeRetryLimit\":" << dmxStatus.writeRetryLimit << ',';
   ss << "\"consecutiveWriteFailures\":" << dmxStatus.consecutiveWriteFailures << ',';
   ss << "\"outputUniverse\":" << outputUniverse << ',';
@@ -2524,10 +2660,75 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
 
     retries = std::clamp(retries, 1, 200);
     dmx_.setWriteRetryLimit(retries);
+
+    if (!db_.setSetting("dmx.write_retry_limit", std::to_string(retries), error)) {
+      return jsonError(500, error);
+    }
+
     logMessage(LogLevel::Info, "dmx", "Write retry limit set to " + std::to_string(retries));
 
     std::ostringstream ss;
     ss << "{\"ok\":true,\"retries\":" << retries << '}';
+    return jsonOk(ss.str());
+  }
+
+  if (request.method == "POST" && request.path == "/api/dmx/transport-settings") {
+    auto form = parseFormEncoded(request.body);
+    std::string error;
+
+    int frameIntervalMs = 33;
+    int reconnectBaseMs = 800;
+    int probeTimeoutMs = 350;
+    int serialReadTimeoutMs = 250;
+    bool strictPreferred = true;
+
+    if (!getRequiredInt(form, "frame_interval_ms", frameIntervalMs, error)) {
+      return jsonError(422, error);
+    }
+    if (!getRequiredInt(form, "reconnect_base_ms", reconnectBaseMs, error)) {
+      return jsonError(422, error);
+    }
+    if (!getRequiredInt(form, "probe_timeout_ms", probeTimeoutMs, error)) {
+      return jsonError(422, error);
+    }
+    if (!getRequiredInt(form, "serial_read_timeout_ms", serialReadTimeoutMs, error)) {
+      return jsonError(422, error);
+    }
+    if (!getRequiredBool(form, "strict_preferred_device", strictPreferred, error)) {
+      return jsonError(422, error);
+    }
+
+    dmx_.setFrameIntervalMs(frameIntervalMs);
+    dmx_.setReconnectBaseMs(reconnectBaseMs);
+    dmx_.setProbeTimeoutMs(probeTimeoutMs);
+    dmx_.setSerialReadTimeoutMs(serialReadTimeoutMs);
+    dmx_.setStrictPreferredDevice(strictPreferred);
+
+    if (!db_.setSetting("dmx.frame_interval_ms", std::to_string(frameIntervalMs), error)) {
+      return jsonError(500, error);
+    }
+    if (!db_.setSetting("dmx.reconnect_base_ms", std::to_string(reconnectBaseMs), error)) {
+      return jsonError(500, error);
+    }
+    if (!db_.setSetting("dmx.probe_timeout_ms", std::to_string(probeTimeoutMs), error)) {
+      return jsonError(500, error);
+    }
+    if (!db_.setSetting("dmx.serial_read_timeout_ms", std::to_string(serialReadTimeoutMs), error)) {
+      return jsonError(500, error);
+    }
+    if (!db_.setSetting("dmx.strict_preferred_device", strictPreferred ? "true" : "false", error)) {
+      return jsonError(500, error);
+    }
+
+    const auto status = dmx_.status();
+    std::ostringstream ss;
+    ss << "{\"ok\":true,";
+    ss << "\"frameIntervalMs\":" << status.frameIntervalMs << ',';
+    ss << "\"reconnectBaseMs\":" << status.reconnectBaseMs << ',';
+    ss << "\"probeTimeoutMs\":" << status.probeTimeoutMs << ',';
+    ss << "\"serialReadTimeoutMs\":" << status.serialReadTimeoutMs << ',';
+    ss << "\"strictPreferredDevice\":" << jsonBool(status.strictPreferredDevice);
+    ss << '}';
     return jsonOk(ss.str());
   }
 
