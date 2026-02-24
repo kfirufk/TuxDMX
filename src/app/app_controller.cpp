@@ -1158,24 +1158,37 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
 
     // In volume blackout we do not allow beat markers below threshold to wake movement.
     const float beatGate = volumeBlackoutProfile ? std::max(gate, 0.20F) : std::max(0.05F, gate * 0.85F);
-    const bool strongBeat = metrics.beat && (rawEnergy >= beatGate);
+    bool strongBeat = metrics.beat && (rawEnergy >= beatGate);
     bool nearSilence = volumeBlackoutProfile ? (rawEnergy < gate) : (!strongBeat && rawEnergy < gate);
     if (volumeBlackoutProfile && simulatedAudioSource) {
       // In this profile, synthetic fallback audio should never drive fixtures.
       nearSilence = true;
     }
     if (nearSilence) {
-      state.smoothedEnergy *= volumeBlackoutProfile ? 0.45F : 0.75F;
-      if (state.smoothedEnergy < 0.01F) {
+      state.smoothedEnergy *= volumeBlackoutProfile ? 0.30F : 0.75F;
+      if (state.smoothedEnergy < 0.005F) {
         state.smoothedEnergy = 0.0F;
       }
     }
 
-    const float activity = gate >= 0.99F
-                               ? 0.0F
-                               : std::clamp((state.smoothedEnergy - gate) / std::max(0.01F, 1.0F - gate), 0.0F, 1.0F);
-    const float motionActivity =
-        volumeBlackoutProfile ? std::clamp((activity - 0.18F) / 0.82F, 0.0F, 1.0F) : activity;
+    float activity = gate >= 0.99F
+                         ? 0.0F
+                         : std::clamp((state.smoothedEnergy - gate) / std::max(0.01F, 1.0F - gate), 0.0F, 1.0F);
+    if (volumeBlackoutProfile && activity < 0.08F) {
+      // Prevent tiny background fluctuations from waking movement/effects.
+      nearSilence = true;
+      strongBeat = false;
+      activity = 0.0F;
+      state.smoothedEnergy *= 0.35F;
+      if (state.smoothedEnergy < 0.005F) {
+        state.smoothedEnergy = 0.0F;
+      }
+    }
+
+    float motionActivity = volumeBlackoutProfile ? std::clamp((activity - 0.18F) / 0.82F, 0.0F, 1.0F) : activity;
+    if (volumeBlackoutProfile && nearSilence) {
+      motionActivity = 0.0F;
+    }
 
     // Hue motion follows meaningful audio activity. When quiet, it barely changes.
     float hueStep = volumeBlackoutProfile && nearSilence ? 0.0F : (0.06F + (activity * 2.4F));
@@ -1186,7 +1199,8 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
       hueStep += metrics.bpm / 140.0F;
     }
     state.hue += hueStep;
-    state.hue += hueJitter(reactiveRng_) * (0.12F + (activity * 0.88F));
+    const float jitterScale = volumeBlackoutProfile && nearSilence ? 0.0F : (0.12F + (activity * 0.88F));
+    state.hue += hueJitter(reactiveRng_) * jitterScale;
     if (state.hue < 0.0F) {
       state.hue += 360.0F;
     }
@@ -1246,11 +1260,18 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
       } else if (kind == "pan_speed") {
         // This channel is documented as 0=fast, 255=slow, so we invert energy.
         // High music energy => lower DMX value => faster movement.
-        float speedValue =
-            (nearSilence || (volumeBlackoutProfile && motionActivity < 0.03F))
-                ? 255.0F
-                : (240.0F - (motionActivity * 200.0F) - (strongBeat ? 16.0F : 0.0F));
-        speedValue = std::clamp(speedValue, 15.0F, 255.0F);
+        float speedValue = 255.0F;
+        if (volumeBlackoutProfile && nearSilence) {
+          // In blackout profile, settle to center quickly when audio drops.
+          speedValue = 0.0F;
+        } else if (!(nearSilence || (volumeBlackoutProfile && motionActivity < 0.03F))) {
+          speedValue = 240.0F - (motionActivity * 200.0F) - (strongBeat ? 16.0F : 0.0F);
+        }
+        if (volumeBlackoutProfile && nearSilence) {
+          speedValue = std::clamp(speedValue, 0.0F, 255.0F);
+        } else {
+          speedValue = std::clamp(speedValue, 15.0F, 255.0F);
+        }
         nextValue = static_cast<int>(std::round(speedValue));
       } else if (kind == "red") {
         nextValue = volumeBlackoutProfile && nearSilence ? 0 : rgb[0];
