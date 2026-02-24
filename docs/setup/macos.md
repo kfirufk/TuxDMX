@@ -36,7 +36,7 @@ The preferred device selection is persisted in SQLite and restored on next start
 
 ```text
 --bind <ip>              default: 0.0.0.0
---port <port>            default: 8080
+--port <port>            default: 18181
 --configure-preset <p>   default: ninja-debug
 --build-preset <p>       default: build-debug
 --db <path>              default: ./data/tuxdmx.sqlite

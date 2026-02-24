@@ -12,8 +12,8 @@ TuxDMX is server-first:
 
 ## Base URL
 
-- Local: `http://127.0.0.1:8080`
-- LAN: `http://<server-ip>:8080`
+- Local: `http://127.0.0.1:18181`
+- LAN: `http://<server-ip>:18181`
 
 ## Request and Response Format
 
@@ -148,7 +148,7 @@ Standard response envelope:
 Set fixture channel value:
 
 ```bash
-curl -X POST "http://127.0.0.1:8080/api/fixtures/3/channels/5" \
+curl -X POST "http://127.0.0.1:18181/api/fixtures/3/channels/5" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   --data "value=180"
 ```
@@ -156,7 +156,7 @@ curl -X POST "http://127.0.0.1:8080/api/fixtures/3/channels/5" \
 Create scene:
 
 ```bash
-curl -X POST "http://127.0.0.1:8080/api/scenes" \
+curl -X POST "http://127.0.0.1:18181/api/scenes" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   --data "name=Battle%20Red&transition_seconds=1.2"
 ```
@@ -164,7 +164,7 @@ curl -X POST "http://127.0.0.1:8080/api/scenes" \
 Set audio reactive profile:
 
 ```bash
-curl -X POST "http://127.0.0.1:8080/api/audio/reactive-profile" \
+curl -X POST "http://127.0.0.1:18181/api/audio/reactive-profile" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   --data "profile=volume_blackout"
 ```

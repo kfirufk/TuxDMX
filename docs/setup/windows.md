@@ -51,7 +51,7 @@ The preferred device selection is persisted in SQLite and restored on next start
 
 ```text
 -Bind <ip>                default: 0.0.0.0
--Port <port>              default: 8080
+-Port <port>              default: 18181
 -ConfigurePreset <name>   default: ninja-debug
 -BuildPreset <name>       default: build-debug
 -TestPreset <name>        default: test-debug

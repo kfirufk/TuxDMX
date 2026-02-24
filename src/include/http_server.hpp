@@ -45,7 +45,7 @@ class HttpServer {
   bool bindSocket(std::string& error);
 
   std::string bindAddress_;
-  int port_ = 8080;
+  int port_ = 18181;
   Handler handler_;
 
   std::atomic<bool> running_{false};

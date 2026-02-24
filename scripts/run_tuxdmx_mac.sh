@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIGURE_PRESET="ninja-debug"
 BUILD_PRESET="build-debug"
 BIND_ADDRESS="0.0.0.0"
-PORT="8080"
+PORT="18181"
 DB_PATH="${REPO_ROOT}/data/tuxdmx.sqlite"
 WEB_ROOT="${REPO_ROOT}/web"
 NO_OPEN="0"
@@ -18,7 +18,7 @@ Usage: run_tuxdmx_mac.sh [options]
 
 Options:
   --bind <ip>              Server bind IP (default: 0.0.0.0)
-  --port <port>            Server port (default: 8080)
+  --port <port>            Server port (default: 18181)
   --configure-preset <p>   CMake configure preset (default: ninja-debug)
   --build-preset <p>       CMake build preset (default: build-debug)
   --db <path>              SQLite database path (default: ./data/tuxdmx.sqlite)

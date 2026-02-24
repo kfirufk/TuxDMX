@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [string]$Bind = "0.0.0.0",
-  [int]$Port = 8080,
+  [int]$Port = 18181,
   [string]$ConfigurePreset = "ninja-debug",
   [string]$BuildPreset = "build-debug",
   [string]$TestPreset = "test-debug",

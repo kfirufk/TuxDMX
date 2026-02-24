@@ -20,7 +20,7 @@ void handleSignal(int) { gStopRequested.store(true); }
 void printUsage(const char* argv0) {
   const auto backends = tuxdmx::supportedDmxBackendNames();
   std::cout << "Usage: " << argv0
-            << " [--bind 0.0.0.0] [--port 8080] [--db data/tuxdmx.sqlite] [--web-root ./web] [--log-file "
+            << " [--bind 0.0.0.0] [--port 18181] [--db data/tuxdmx.sqlite] [--web-root ./web] [--log-file "
                "data/tuxdmx.log] [--dmx-backend enttec-usb-pro]\n";
   std::cout << "Supported DMX backends:";
   for (const auto& backend : backends) {
@@ -33,7 +33,7 @@ void printUsage(const char* argv0) {
 
 int main(int argc, char** argv) {
   std::string bindAddress = "0.0.0.0";
-  int port = 8080;
+  int port = 18181;
   std::string dbPath = "data/tuxdmx.sqlite";
   std::string webRoot = TUXDMX_DEFAULT_WEB_ROOT;
   std::string logFilePath = "data/tuxdmx.log";

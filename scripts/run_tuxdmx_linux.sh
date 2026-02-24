@@ -8,7 +8,7 @@ CONFIGURE_PRESET="ninja-debug"
 BUILD_PRESET="build-debug"
 TEST_PRESET="test-debug"
 BIND_ADDRESS="0.0.0.0"
-PORT="8080"
+PORT="18181"
 DB_PATH="${REPO_ROOT}/data/tuxdmx.sqlite"
 WEB_ROOT="${REPO_ROOT}/web"
 LOG_FILE="${REPO_ROOT}/data/tuxdmx.log"
@@ -22,7 +22,7 @@ Usage: run_tuxdmx_linux.sh [options]
 
 Options:
   --bind <ip>              Server bind IP (default: 0.0.0.0)
-  --port <port>            Server port (default: 8080)
+  --port <port>            Server port (default: 18181)
   --configure-preset <p>   CMake configure preset (default: ninja-debug)
   --build-preset <p>       CMake build preset (default: build-debug)
   --test-preset <p>        CTest preset for --run-tests (default: test-debug)

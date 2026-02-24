@@ -122,7 +122,7 @@ The Learn/Template workflow is designed so you can test channels live while buil
 ```bash
 cmake --preset ninja-debug
 cmake --build --preset build-debug
-./build/debug/tuxdmx --bind 0.0.0.0 --port 8080
+./build/debug/tuxdmx --bind 0.0.0.0 --port 18181
 ```
 
 To explicitly select a DMX backend:
@@ -141,7 +141,7 @@ The script will:
 - configure + build with CMake presets
 - start the TuxDMX server
 - wait for `/api/state` to respond
-- open `http://127.0.0.1:8080` in your browser
+- open `http://127.0.0.1:18181` in your browser
 - print a LAN URL for phone/tablet access
 
 Optional flags:
@@ -169,10 +169,10 @@ Run these commands from **x64 Native Tools Command Prompt for VS** (or a PowerSh
 ```powershell
 cmake -S . -B build\debug -G "Ninja" -DCMAKE_BUILD_TYPE=Debug
 cmake --build build\debug
-.\build\debug\tuxdmx.exe --bind 0.0.0.0 --port 8080
+.\build\debug\tuxdmx.exe --bind 0.0.0.0 --port 18181
 ```
 
-Open `http://<server-ip>:8080` from phone/desktop browser.
+Open `http://<server-ip>:18181` from phone/desktop browser.
 
 ### Windows One-Command Run Script
 
@@ -191,7 +191,7 @@ The launcher will:
 - print install/download guidance if something is missing
 - configure + build with CMake presets
 - start the server and wait for `/api/state`
-- open `http://127.0.0.1:8080` in your browser
+- open `http://127.0.0.1:18181` in your browser
 - print local/LAN URL and log file path for debugging
 
 Optional flags:
@@ -233,7 +233,7 @@ ctest --preset test-debug
 
 ```text
 --bind <ip>          default: 0.0.0.0
---port <port>        default: 8080
+--port <port>        default: 18181
 --db <path>          default: data/tuxdmx.sqlite
 --web-root <path>    default: ./web
 --log-file <path>    default: data/tuxdmx.log
