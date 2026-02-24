@@ -187,7 +187,15 @@ $launched = $false
 
 try {
   Write-Step "Configuring ($ConfigurePreset)"
-  $configureResult = Invoke-NativeLogged -Command "cmake" -Arguments @("--preset", $ConfigurePreset)
+  $configureArgs = @("--preset", $ConfigurePreset)
+  if (-not [string]::IsNullOrWhiteSpace($env:CMAKE_TOOLCHAIN_FILE)) {
+    $toolchainPath = $env:CMAKE_TOOLCHAIN_FILE -replace "\\", "/"
+    $configureArgs += "-DCMAKE_TOOLCHAIN_FILE=$toolchainPath"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:VCPKG_TARGET_TRIPLET)) {
+    $configureArgs += "-DVCPKG_TARGET_TRIPLET=$($env:VCPKG_TARGET_TRIPLET)"
+  }
+  $configureResult = Invoke-NativeLogged -Command "cmake" -Arguments $configureArgs
   if ($configureResult.ExitCode -ne 0) {
     $configureBlob = Join-Lines -Lines $configureResult.Lines
     $presetBuildDir = ""
