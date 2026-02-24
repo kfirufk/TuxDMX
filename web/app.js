@@ -560,26 +560,38 @@ function setControlMode(mode, { persist = true, rerender = true } = {}) {
   }
 }
 
-function setCompactMode(enabled, { persist = true, rerender = true } = {}) {
-  state.compactMode = Boolean(enabled);
+function persistLayoutPreferences() {
+  try {
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({
+      compact: state.compactMode,
+      hideMidi: state.hideMidiMode,
+    }));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function applyLayoutModeUi() {
   document.body.classList.toggle('layout-compact', state.compactMode);
+  document.body.classList.toggle('layout-hide-midi', state.hideMidiMode);
+
   if (els.layoutCompactToggle) {
     els.layoutCompactToggle.classList.toggle('is-active', state.compactMode);
     els.layoutCompactToggle.setAttribute('aria-pressed', state.compactMode ? 'true' : 'false');
   }
+  if (els.layoutHideMidiToggle) {
+    els.layoutHideMidiToggle.classList.toggle('is-active', state.hideMidiMode);
+    els.layoutHideMidiToggle.setAttribute('aria-pressed', state.hideMidiMode ? 'true' : 'false');
+  }
+}
+
+function setCompactMode(enabled, { persist = true, rerender = true } = {}) {
+  state.compactMode = Boolean(enabled);
+  if (state.compactMode) state.hideMidiMode = false;
+  applyLayoutModeUi();
 
   if (persist) {
-    try {
-      const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      const next = {
-        ...(typeof parsed === 'object' && parsed !== null ? parsed : {}),
-        compact: state.compactMode,
-      };
-      window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // Ignore storage failures.
-    }
+    persistLayoutPreferences();
   }
 
   if (rerender) {
@@ -590,24 +602,11 @@ function setCompactMode(enabled, { persist = true, rerender = true } = {}) {
 
 function setHideMidiMode(enabled, { persist = true, rerender = true } = {}) {
   state.hideMidiMode = Boolean(enabled);
-  document.body.classList.toggle('layout-hide-midi', state.hideMidiMode);
-  if (els.layoutHideMidiToggle) {
-    els.layoutHideMidiToggle.classList.toggle('is-active', state.hideMidiMode);
-    els.layoutHideMidiToggle.setAttribute('aria-pressed', state.hideMidiMode ? 'true' : 'false');
-  }
+  if (state.hideMidiMode) state.compactMode = false;
+  applyLayoutModeUi();
 
   if (persist) {
-    try {
-      const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      const next = {
-        ...(typeof parsed === 'object' && parsed !== null ? parsed : {}),
-        hideMidi: state.hideMidiMode,
-      };
-      window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // Ignore storage failures.
-    }
+    persistLayoutPreferences();
   }
 
   if (rerender) {
@@ -634,6 +633,9 @@ function initializeUiPreferences() {
     }
   } catch {
     // Ignore storage access issues; defaults are good fallback values.
+  }
+  if (savedCompact && savedHideMidi) {
+    savedHideMidi = false;
   }
   setActiveView(savedView, { persist: false });
   setControlMode(savedMode, { persist: false, rerender: false });
@@ -1610,6 +1612,98 @@ function createChannelControl(initialValue, onChange) {
     : createSlider(initialValue, onChange);
 }
 
+function closeOpenChannelInfoPopovers(exceptEl = null) {
+  const opened = document.querySelectorAll('.channel-info.is-open');
+  opened.forEach((node) => {
+    if (exceptEl && node === exceptEl) return;
+    node.classList.remove('is-open');
+    const button = node.querySelector('.channel-info-btn');
+    if (button) {
+      button.setAttribute('aria-expanded', 'false');
+    }
+  });
+}
+
+function createChannelInfoPopover(fixture, channel) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'channel-info';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'channel-info-btn';
+  button.setAttribute('aria-label', `CH${channel.channelIndex} details`);
+  button.setAttribute('aria-expanded', 'false');
+  button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/></svg>';
+
+  const popover = document.createElement('div');
+  popover.className = 'channel-info-popover';
+  popover.setAttribute('role', 'tooltip');
+
+  const kindLabel = String(channel.kind || 'generic').replaceAll('_', ' ');
+  const dmxAddress = Math.max(1, Number(fixture.startAddress || 1) + Number(channel.channelIndex || 1) - 1);
+
+  const makeLine = (label, value) => {
+    const line = document.createElement('p');
+    line.className = 'channel-info-line';
+
+    const key = document.createElement('span');
+    key.textContent = `${label}:`;
+
+    const val = document.createElement('strong');
+    val.textContent = value;
+
+    line.append(key, val);
+    return line;
+  };
+
+  popover.append(
+    makeLine('Fixture', String(fixture.name || `Fixture ${fixture.id}`)),
+    makeLine('Template', String(fixture.templateName || '--')),
+    makeLine('DMX', `U${fixture.universe} CH${channel.channelIndex} (addr ${dmxAddress})`),
+    makeLine('Type', kindLabel),
+    makeLine('Value', String(channel.value ?? 0)),
+  );
+
+  const ranges = Array.isArray(channel.ranges) ? channel.ranges : [];
+  const rangeWrap = document.createElement('div');
+  rangeWrap.className = 'channel-info-ranges';
+
+  if (!ranges.length) {
+    const empty = document.createElement('p');
+    empty.className = 'channel-info-range';
+    empty.textContent = 'No ranges configured';
+    rangeWrap.appendChild(empty);
+  } else {
+    ranges.forEach((range) => {
+      const item = document.createElement('p');
+      item.className = 'channel-info-range';
+      item.textContent = `${range.startValue}-${range.endValue} ${range.label || ''}`.trim();
+      rangeWrap.appendChild(item);
+    });
+  }
+
+  popover.appendChild(rangeWrap);
+
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const shouldOpen = !wrapper.classList.contains('is-open');
+    closeOpenChannelInfoPopovers(shouldOpen ? wrapper : null);
+    wrapper.classList.toggle('is-open', shouldOpen);
+    button.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+  });
+
+  button.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      wrapper.classList.remove('is-open');
+      button.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  wrapper.append(button, popover);
+  return wrapper;
+}
+
 async function moveFixture(fixtureId, direction) {
   const ordered = [...(state.fixtures || [])]
     .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(a.id) - Number(b.id));
@@ -1753,7 +1847,13 @@ function renderFixtures(fixtures) {
 
       const titleWrapRow = document.createElement('div');
       titleWrapRow.className = 'channel-title';
-      titleWrapRow.innerHTML = `${iconBadge(channel.kind)}<span>${escapeHtml(channel.name)}</span>`;
+
+      const titleMain = document.createElement('div');
+      titleMain.className = 'channel-title-main';
+      titleMain.innerHTML = `${iconBadge(channel.kind)}<span class="channel-title-text">${escapeHtml(channel.name)}</span>`;
+
+      const infoPopover = createChannelInfoPopover(fixture, channel);
+      titleWrapRow.append(titleMain, infoPopover);
 
       const sub = document.createElement('p');
       sub.className = 'channel-sub';
@@ -2869,6 +2969,17 @@ function installEventListeners() {
       setHideMidiMode(!state.hideMidiMode);
     });
   }
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest('.channel-info')) return;
+    closeOpenChannelInfoPopovers();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      closeOpenChannelInfoPopovers();
+    }
+  });
 
   els.templateExportBtn.addEventListener('click', exportTemplates);
   els.templateImportBtn.addEventListener('click', () => els.templateImportFile.click());
