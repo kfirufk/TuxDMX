@@ -2,7 +2,7 @@
 
 Cross-platform C++23 DMX control server with a responsive web UI for desktop/tablet/phone.
 
-The app follows a server/client model: the DMX engine runs on one host machine, and any device on the same network can open the web UI and control lights through that server.
+The app follows a server/client model: the DMX engine runs on one host machine, and any device on the same network can open the web UI and control lights through that server (desktop, wide-screen control station, tablet, or phone).
 
 ## Project Status
 
@@ -13,6 +13,8 @@ This project is usable, but not production-stable yet. Active work is ongoing, i
 ## Why This Project Exists
 
 TuxDMX started as a personal project to build a **simpler, faster-to-use DMX workflow** than many available free and paid tools. The focus is practical live control: patch fixtures quickly, define custom fixture templates (including unknown fixtures), save/recall scenes, and run music-reactive looks without navigating overly complex interfaces.
+
+Another core goal was remote control flexibility: run the DMX engine on one machine and control it from whatever is convenient in the moment, including phone and tablet web clients.
 
 Initial development and testing were centered on a **NETTEC/ENTTEC DMX USB Pro-style interface**, with emphasis on reducing setup friction for small and medium live sessions.
 
@@ -27,6 +29,7 @@ The Learn/Template workflow is designed so you can test channels live while buil
 
 - C++23 backend with CMake + presets.
 - Pluggable DMX output backend architecture (current backend: `enttec-usb-pro`).
+- Server/client API design that supports custom third-party UIs in addition to the built-in web UI.
 - SQLite persistence for:
   - fixture templates
   - channel definitions and value ranges
