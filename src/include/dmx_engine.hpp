@@ -40,6 +40,8 @@ class DmxEngine {
   int frameIntervalMs() const;
   void setReconnectBaseMs(int baseMs);
   int reconnectBaseMs() const;
+  void setFrameDebugLogging(bool enabled);
+  bool frameDebugLogging() const;
   void setProbeTimeoutMs(int timeoutMs);
   int probeTimeoutMs() const;
   void setSerialReadTimeoutMs(int timeoutMs);
@@ -68,6 +70,12 @@ class DmxEngine {
   int reconnectBackoffMs_ = 0;
   int reconnectBaseMs_ = 800;
   int frameIntervalMs_ = 33;
+  bool frameDebugLogging_ = false;
+  int debugLastUniverse_ = 1;
+  std::array<std::uint8_t, 512> debugLastFrame_{};
+  bool debugHasLastFrame_ = false;
+  std::uint64_t debugFrameCounter_ = 0;
+  std::uint64_t debugUnchangedFrames_ = 0;
   std::chrono::steady_clock::time_point nextReconnectAt_{};
   std::chrono::system_clock::time_point lastConnectAttemptAt_{};
   std::chrono::system_clock::time_point lastSuccessfulFrameAt_{};

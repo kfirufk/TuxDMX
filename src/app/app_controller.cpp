@@ -690,6 +690,19 @@ bool AppController::initialize(std::string& error) {
     } else if (!settingError.empty()) {
       logMessage(LogLevel::Warn, "dmx", "Failed to load dmx.strict_preferred_device: " + settingError);
     }
+
+    settingValue.clear();
+    settingError.clear();
+    if (db_.getSetting("dmx.frame_debug_logging", settingValue, settingError)) {
+      bool enabled = false;
+      if (parseBoolText(settingValue, enabled)) {
+        dmx_.setFrameDebugLogging(enabled);
+      } else {
+        logMessage(LogLevel::Warn, "dmx", "Ignoring invalid dmx.frame_debug_logging setting: " + settingValue);
+      }
+    } else if (!settingError.empty()) {
+      logMessage(LogLevel::Warn, "dmx", "Failed to load dmx.frame_debug_logging: " + settingError);
+    }
   }
 
   dmx_.refreshDevices();
@@ -840,6 +853,7 @@ std::string AppController::buildStatusJson() {
   ss << "\"probeTimeoutMs\":" << dmxStatus.probeTimeoutMs << ',';
   ss << "\"serialReadTimeoutMs\":" << dmxStatus.serialReadTimeoutMs << ',';
   ss << "\"strictPreferredDevice\":" << jsonBool(dmxStatus.strictPreferredDevice) << ',';
+  ss << "\"frameDebugLogging\":" << jsonBool(dmxStatus.frameDebugLogging) << ',';
   ss << "\"endpoint\":\"" << jsonEscape(dmxStatus.endpoint) << "\",";
   ss << "\"activeDeviceId\":\"" << jsonEscape(dmxStatus.activeDeviceId) << "\",";
   ss << "\"preferredDeviceId\":\"" << jsonEscape(dmxStatus.preferredDeviceId) << "\",";
@@ -975,6 +989,7 @@ std::string AppController::buildStateJson() {
   ss << "\"probeTimeoutMs\":" << dmxStatus.probeTimeoutMs << ',';
   ss << "\"serialReadTimeoutMs\":" << dmxStatus.serialReadTimeoutMs << ',';
   ss << "\"strictPreferredDevice\":" << jsonBool(dmxStatus.strictPreferredDevice) << ',';
+  ss << "\"frameDebugLogging\":" << jsonBool(dmxStatus.frameDebugLogging) << ',';
   ss << "\"endpoint\":\"" << jsonEscape(dmxStatus.endpoint) << "\",";
   ss << "\"activeDeviceId\":\"" << jsonEscape(dmxStatus.activeDeviceId) << "\",";
   ss << "\"preferredDeviceId\":\"" << jsonEscape(dmxStatus.preferredDeviceId) << "\",";
@@ -2708,6 +2723,7 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     int probeTimeoutMs = 350;
     int serialReadTimeoutMs = 250;
     bool strictPreferred = true;
+    bool frameDebugLogging = dmx_.frameDebugLogging();
 
     if (!getRequiredInt(form, "frame_interval_ms", frameIntervalMs, error)) {
       return jsonError(422, error);
@@ -2724,12 +2740,18 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     if (!getRequiredBool(form, "strict_preferred_device", strictPreferred, error)) {
       return jsonError(422, error);
     }
+    if (auto it = form.find("frame_debug_logging"); it != form.end()) {
+      if (!parseBoolText(it->second, frameDebugLogging)) {
+        return jsonError(422, "Invalid boolean field: frame_debug_logging");
+      }
+    }
 
     dmx_.setFrameIntervalMs(frameIntervalMs);
     dmx_.setReconnectBaseMs(reconnectBaseMs);
     dmx_.setProbeTimeoutMs(probeTimeoutMs);
     dmx_.setSerialReadTimeoutMs(serialReadTimeoutMs);
     dmx_.setStrictPreferredDevice(strictPreferred);
+    dmx_.setFrameDebugLogging(frameDebugLogging);
 
     if (!db_.setSetting("dmx.frame_interval_ms", std::to_string(frameIntervalMs), error)) {
       return jsonError(500, error);
@@ -2746,6 +2768,9 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     if (!db_.setSetting("dmx.strict_preferred_device", strictPreferred ? "true" : "false", error)) {
       return jsonError(500, error);
     }
+    if (!db_.setSetting("dmx.frame_debug_logging", frameDebugLogging ? "true" : "false", error)) {
+      return jsonError(500, error);
+    }
 
     const auto status = dmx_.status();
     std::ostringstream ss;
@@ -2754,7 +2779,8 @@ HttpResponse AppController::handleApi(const HttpRequest& request) {
     ss << "\"reconnectBaseMs\":" << status.reconnectBaseMs << ',';
     ss << "\"probeTimeoutMs\":" << status.probeTimeoutMs << ',';
     ss << "\"serialReadTimeoutMs\":" << status.serialReadTimeoutMs << ',';
-    ss << "\"strictPreferredDevice\":" << jsonBool(status.strictPreferredDevice);
+    ss << "\"strictPreferredDevice\":" << jsonBool(status.strictPreferredDevice) << ',';
+    ss << "\"frameDebugLogging\":" << jsonBool(status.frameDebugLogging);
     ss << '}';
     return jsonOk(ss.str());
   }

@@ -71,6 +71,7 @@ struct DmxDeviceStatus {
   int probeTimeoutMs = 350;
   int serialReadTimeoutMs = 250;
   bool strictPreferredDevice = true;
+  bool frameDebugLogging = false;
   std::string endpoint;
   std::string activeDeviceId;
   std::string preferredDeviceId;

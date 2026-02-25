@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <sstream>
 #include <utility>
 
 #include "dmx_backend_factory.hpp"
+#include "logger.hpp"
 #include "utils.hpp"
 
 namespace tuxdmx {
@@ -44,6 +46,35 @@ int computeReconnectBackoffMs(int baseMs, int attempt, std::mt19937& rng) {
   return std::clamp(jittered, baseMs, 60000);
 }
 
+std::string formatChangedChannelValues(const std::vector<std::size_t>& changed,
+                                       const std::array<std::uint8_t, 512>& frame,
+                                       const std::array<std::uint8_t, 512>* previousFrame) {
+  constexpr std::size_t kMaxPrintedChannels = 24;
+
+  std::ostringstream ss;
+  std::size_t printed = 0;
+  for (std::size_t index : changed) {
+    if (printed >= kMaxPrintedChannels) {
+      break;
+    }
+    if (printed > 0) {
+      ss << ", ";
+    }
+    ss << "CH" << (index + 1) << '=';
+    if (previousFrame != nullptr) {
+      ss << static_cast<int>((*previousFrame)[index]) << "->";
+    }
+    ss << static_cast<int>(frame[index]);
+    ++printed;
+  }
+
+  if (changed.size() > printed) {
+    ss << ", +" << (changed.size() - printed) << " more";
+  }
+
+  return ss.str();
+}
+
 }  // namespace
 
 DmxEngine::DmxEngine(std::string backendName) : reconnectRng_(std::random_device{}()) {
@@ -73,6 +104,9 @@ void DmxEngine::start() {
     nextReconnectAt_ = {};
     lastConnectAttemptAt_ = {};
     lastSuccessfulFrameAt_ = {};
+    debugFrameCounter_ = 0;
+    debugUnchangedFrames_ = 0;
+    debugHasLastFrame_ = false;
   }
 
   worker_ = std::thread([this] { workerLoop(); });
@@ -108,6 +142,9 @@ void DmxEngine::stop() {
     reconnectAttempt_ = 0;
     reconnectBackoffMs_ = 0;
     nextReconnectAt_ = {};
+    debugFrameCounter_ = 0;
+    debugUnchangedFrames_ = 0;
+    debugHasLastFrame_ = false;
   }
 }
 
@@ -195,6 +232,19 @@ void DmxEngine::setReconnectBaseMs(int baseMs) {
 int DmxEngine::reconnectBaseMs() const {
   std::scoped_lock lock(transportMutex_);
   return reconnectBaseMs_;
+}
+
+void DmxEngine::setFrameDebugLogging(bool enabled) {
+  std::scoped_lock lock(transportMutex_);
+  frameDebugLogging_ = enabled;
+  debugFrameCounter_ = 0;
+  debugUnchangedFrames_ = 0;
+  debugHasLastFrame_ = false;
+}
+
+bool DmxEngine::frameDebugLogging() const {
+  std::scoped_lock lock(transportMutex_);
+  return frameDebugLogging_;
 }
 
 void DmxEngine::setProbeTimeoutMs(int timeoutMs) {
@@ -285,6 +335,9 @@ void DmxEngine::forceReconnect() {
   reconnectAttempt_ = 0;
   reconnectBackoffMs_ = 0;
   nextReconnectAt_ = {};
+  debugFrameCounter_ = 0;
+  debugUnchangedFrames_ = 0;
+  debugHasLastFrame_ = false;
 }
 
 std::vector<int> DmxEngine::knownUniverses() const {
@@ -313,6 +366,7 @@ DmxDeviceStatus DmxEngine::status() const {
     out.reconnectBackoffMs = reconnectBackoffMs_;
     out.reconnectBaseMs = reconnectBaseMs_;
     out.frameIntervalMs = frameIntervalMs_;
+    out.frameDebugLogging = frameDebugLogging_;
     if (out.lastConnectAttemptUnixMs <= 0) {
       out.lastConnectAttemptUnixMs = unixMs(lastConnectAttemptAt_);
     }
@@ -370,9 +424,11 @@ void DmxEngine::workerLoop() {
       }
     } else {
       std::array<std::uint8_t, 512> snapshot = makeZeroUniverse();
+      int activeUniverse = 1;
       {
         std::scoped_lock lock(mutex_);
-        if (auto it = universes_.find(outputUniverse_); it != universes_.end()) {
+        activeUniverse = outputUniverse_;
+        if (auto it = universes_.find(activeUniverse); it != universes_.end()) {
           snapshot = it->second;
         }
       }
@@ -383,22 +439,76 @@ void DmxEngine::workerLoop() {
         backendStatus = backend_->status();
       }
 
-      std::scoped_lock lock(transportMutex_);
-      if (sent) {
-        transportState_ = "connected";
-        reconnectAttempt_ = 0;
-        reconnectBackoffMs_ = 0;
-        nextReconnectAt_ = {};
-        lastSuccessfulFrameAt_ = std::chrono::system_clock::now();
-      } else {
-        transportState_ = "degraded";
-        if (!backendStatus.connected) {
-          if (nextReconnectAt_.time_since_epoch().count() == 0 || nowSteady >= nextReconnectAt_) {
-            ++reconnectAttempt_;
-            reconnectBackoffMs_ = computeReconnectBackoffMs(reconnectBaseMs_, reconnectAttempt_, reconnectRng_);
-            nextReconnectAt_ = nowSteady + std::chrono::milliseconds(reconnectBackoffMs_);
+      std::string debugLogLine;
+      LogLevel debugLogLevel = LogLevel::Debug;
+      {
+        std::scoped_lock lock(transportMutex_);
+        if (sent) {
+          transportState_ = "connected";
+          reconnectAttempt_ = 0;
+          reconnectBackoffMs_ = 0;
+          nextReconnectAt_ = {};
+          lastSuccessfulFrameAt_ = std::chrono::system_clock::now();
+
+          if (frameDebugLogging_) {
+            ++debugFrameCounter_;
+            const bool baseline = !debugHasLastFrame_ || debugLastUniverse_ != activeUniverse;
+            std::vector<std::size_t> changedChannels;
+            changedChannels.reserve(32);
+            for (std::size_t i = 0; i < snapshot.size(); ++i) {
+              if (baseline) {
+                if (snapshot[i] != 0) {
+                  changedChannels.push_back(i);
+                }
+              } else if (snapshot[i] != debugLastFrame_[i]) {
+                changedChannels.push_back(i);
+              }
+            }
+
+            if (baseline) {
+              debugUnchangedFrames_ = 0;
+              debugLogLine =
+                  "DMX TX baseline U" + std::to_string(activeUniverse) + " frame#" + std::to_string(debugFrameCounter_)
+                  + " changed=" + std::to_string(changedChannels.size()) + " (CH=value 0-255): "
+                  + (changedChannels.empty() ? std::string("all channels are 0")
+                                             : formatChangedChannelValues(changedChannels, snapshot, nullptr));
+            } else if (!changedChannels.empty()) {
+              debugUnchangedFrames_ = 0;
+              debugLogLine = "DMX TX U" + std::to_string(activeUniverse) + " frame#" + std::to_string(debugFrameCounter_)
+                             + " changed=" + std::to_string(changedChannels.size()) + " (CH=old->new 0-255): "
+                             + formatChangedChannelValues(changedChannels, snapshot, &debugLastFrame_);
+            } else {
+              ++debugUnchangedFrames_;
+              if (debugUnchangedFrames_ % 60 == 0) {
+                debugLogLine = "DMX TX U" + std::to_string(activeUniverse) + " unchanged for "
+                               + std::to_string(debugUnchangedFrames_) + " frames";
+              }
+            }
+
+            debugLastFrame_ = snapshot;
+            debugLastUniverse_ = activeUniverse;
+            debugHasLastFrame_ = true;
+          }
+        } else {
+          transportState_ = "degraded";
+          if (!backendStatus.connected) {
+            if (nextReconnectAt_.time_since_epoch().count() == 0 || nowSteady >= nextReconnectAt_) {
+              ++reconnectAttempt_;
+              reconnectBackoffMs_ = computeReconnectBackoffMs(reconnectBaseMs_, reconnectAttempt_, reconnectRng_);
+              nextReconnectAt_ = nowSteady + std::chrono::milliseconds(reconnectBackoffMs_);
+            }
+            debugHasLastFrame_ = false;
+            debugUnchangedFrames_ = 0;
+            if (frameDebugLogging_) {
+              debugLogLevel = LogLevel::Warn;
+              debugLogLine = "DMX TX send failed on U" + std::to_string(activeUniverse) + ", backend disconnected";
+            }
           }
         }
+      }
+
+      if (!debugLogLine.empty()) {
+        logMessage(debugLogLevel, "dmx-tx", debugLogLine);
       }
     }
 

@@ -91,6 +91,7 @@ const els = {
   dmxProbeTimeout: document.getElementById('dmx-probe-timeout'),
   dmxSerialTimeout: document.getElementById('dmx-serial-timeout'),
   dmxStrictPreferred: document.getElementById('dmx-strict-preferred'),
+  dmxFrameDebugLog: document.getElementById('dmx-frame-debug-log'),
   applyDmxTransportBtn: document.getElementById('apply-dmx-transport-btn'),
   dmxTransportStatus: document.getElementById('dmx-transport-status'),
   audioBackend: document.getElementById('audio-backend'),
@@ -1596,6 +1597,9 @@ function renderStatus(dmx, audio, midi = null) {
   if (els.dmxStrictPreferred && document.activeElement !== els.dmxStrictPreferred) {
     els.dmxStrictPreferred.checked = Boolean(dmx.strictPreferredDevice ?? true);
   }
+  if (els.dmxFrameDebugLog && document.activeElement !== els.dmxFrameDebugLog) {
+    els.dmxFrameDebugLog.checked = Boolean(dmx.frameDebugLogging ?? false);
+  }
   if (els.dmxTransportStatus) {
     const lastConnect = formatUnixMs(dmx.lastConnectAttemptUnixMs);
     const lastFrame = formatUnixMs(dmx.lastSuccessfulFrameUnixMs);
@@ -3064,7 +3068,8 @@ async function applyDmxRetryLimit() {
 }
 
 async function applyDmxTransportSettings() {
-  if (!els.dmxFrameInterval || !els.dmxReconnectBase || !els.dmxProbeTimeout || !els.dmxSerialTimeout || !els.dmxStrictPreferred) {
+  if (!els.dmxFrameInterval || !els.dmxReconnectBase || !els.dmxProbeTimeout
+    || !els.dmxSerialTimeout || !els.dmxStrictPreferred || !els.dmxFrameDebugLog) {
     return;
   }
 
@@ -3073,6 +3078,7 @@ async function applyDmxTransportSettings() {
   const probeTimeoutMs = Number(els.dmxProbeTimeout.value || 350);
   const serialReadTimeoutMs = Number(els.dmxSerialTimeout.value || 250);
   const strictPreferredDevice = Boolean(els.dmxStrictPreferred.checked);
+  const frameDebugLogging = Boolean(els.dmxFrameDebugLog.checked);
 
   if (!Number.isFinite(frameIntervalMs) || frameIntervalMs < 5 || frameIntervalMs > 1000) {
     showToast('Frame interval must be between 5 and 1000 ms', 'error');
@@ -3100,6 +3106,7 @@ async function applyDmxTransportSettings() {
         probe_timeout_ms: String(Math.round(probeTimeoutMs)),
         serial_read_timeout_ms: String(Math.round(serialReadTimeoutMs)),
         strict_preferred_device: strictPreferredDevice ? 'true' : 'false',
+        frame_debug_logging: frameDebugLogging ? 'true' : 'false',
       },
     });
     await loadState({ silent: true });

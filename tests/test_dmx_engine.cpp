@@ -241,6 +241,7 @@ int main() {
     tuxdmx::DmxEngine engine(std::move(backend));
     engine.setFrameIntervalMs(12);
     engine.setReconnectBaseMs(120);
+    engine.setFrameDebugLogging(true);
     engine.start();
 
     const bool connected = waitUntil(
@@ -256,6 +257,10 @@ int main() {
     assert(status.reconnectAttempt == 0);
     assert(status.reconnectBaseMs == 120);
     assert(status.frameIntervalMs == 12);
+    assert(status.frameDebugLogging);
+
+    engine.setFrameDebugLogging(false);
+    assert(!engine.status().frameDebugLogging);
 
     engine.stop();
   }
