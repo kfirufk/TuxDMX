@@ -45,6 +45,7 @@ class EnttecDmxPro final : public DmxOutputBackend {
   void setLastErrorUnlocked(std::string stage, std::string message, int code = 0, std::string endpoint = {},
                             std::string kind = {}, std::string hint = {}, bool likelyUsbPower = false);
   void clearLastErrorUnlocked();
+  bool reopenCurrentEndpointLocked(int& errorCode, std::string& error);
   static std::string deviceIdFor(std::string_view port, std::string_view serial);
   static bool deviceIdMatches(const DmxOutputDevice& device, std::string_view preferredId);
   std::vector<std::string> candidatePorts() const;
@@ -62,6 +63,12 @@ class EnttecDmxPro final : public DmxOutputBackend {
   int probeTimeoutMs_ = 350;
   int serialReadTimeoutMs_ = 250;
   bool strictPreferredDevice_ = true;
+  std::string lastKnownEndpoint_;
+  std::string lastKnownSerial_;
+  std::string lastKnownDeviceId_;
+  int lastKnownFirmwareMajor_ = 0;
+  int lastKnownFirmwareMinor_ = 0;
+  std::string lastScanSignature_;
 
 #ifdef _WIN32
   void* handle_ = nullptr;
