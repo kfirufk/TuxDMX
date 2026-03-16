@@ -10,6 +10,8 @@ The app follows a server/client model: the DMX engine runs on one host machine, 
 
 This project is usable, but not production-stable yet. Active work is ongoing, including fixture-template tuning and intermittent device stability investigations on some hardware/cabling combinations.
 
+Current manual verification checklist: [TESTING_TODO.md](./TESTING_TODO.md)
+
 ## Why This Project Exists
 
 TuxDMX started as a personal project to build a **simpler, faster-to-use DMX workflow** than many available free and paid tools. The focus is practical live control: patch fixtures quickly, define custom fixture templates (including unknown fixtures), save/recall scenes, and run music-reactive looks without navigating overly complex interfaces.
