@@ -45,6 +45,7 @@ class Database {
                                     int channelCountOverride, bool allowOverlap = false);
 
   std::vector<FixtureInstance> listFixtures(std::string& error);
+  bool storeFixtureChannelValue(int fixtureId, int channelIndex, int value, std::string& error);
   bool updateFixtureChannelValue(int fixtureId, int channelIndex, int value, ChannelPatch& patch, std::string& error);
   bool setFixtureEnabled(int fixtureId, bool enabled, std::string& error);
   bool deleteFixture(int fixtureId, std::string& error);

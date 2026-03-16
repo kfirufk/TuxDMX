@@ -131,7 +131,7 @@ Standard response envelope:
 |---|---|---|---|
 | POST | `/api/audio/reactive` | Toggle music reactive mode | `enabled` |
 | POST | `/api/audio/reactive-threshold` | Set reactive threshold | `threshold` (0..1 float) |
-| POST | `/api/audio/reactive-profile` | Set profile | `profile` (`balanced` or `volume_blackout`) |
+| POST | `/api/audio/reactive-profile` | Set profile | `profile` (`balanced`, `party_sweep`, `color_pulse`, or `volume_blackout`) |
 | POST | `/api/audio/input-device` | Select audio input | `device_id` (`-1` = system default) |
 
 ## Minimal Custom UI Flow

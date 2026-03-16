@@ -54,6 +54,9 @@ class AppController {
   struct ReactiveFixtureState {
     float hue = 0.0F;
     float smoothedEnergy = 0.0F;
+    float motionPhase = 0.0F;
+    float motionEnergy = 0.0F;
+    float beatPulse = 0.0F;
     std::size_t modeCursor = 0;
   };
 
@@ -75,7 +78,7 @@ class AppController {
   std::unordered_map<int, ReactiveFixtureState> reactiveStates_;
   std::chrono::steady_clock::time_point lastReactiveApply_{};
   std::atomic<float> reactiveVolumeThreshold_{0.12F};
-  std::atomic<int> reactiveProfile_{0};  // 0=balanced, 1=volume_blackout
+  std::atomic<int> reactiveProfile_{0};  // balanced | volume_blackout | party_sweep | color_pulse
 
   std::mutex midiMutex_;
   std::string midiInputMode_ = "all";  // all | input id

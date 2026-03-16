@@ -97,6 +97,8 @@ The Learn/Template workflow is designed so you can test channels live while buil
   - fallback simulated analyzer when PortAudio is unavailable
   - selectable reactive profiles:
     - `balanced` (default musical behavior)
+    - `party_sweep` (more movement, wider sweeps, stronger auto-effect bias)
+    - `color_pulse` (color-forward, softer motion, good for mixed/static rigs)
     - `volume_blackout` (no light output below threshold)
   - live volume meter + adjustable minimum energy threshold slider (ignore low background noise)
   - reactive playback maps to channel kinds and labeled ranges with documented formulas in code
@@ -278,7 +280,7 @@ ctest --preset test-debug
 - `POST /api/dmx/write-retry-limit` set DMX write retries (`retries` in range `1..200`)
 - `POST /api/audio/reactive` toggle music-reactive mode
 - `POST /api/audio/reactive-threshold` set minimum reactive energy threshold (`threshold` in range `0..1`)
-- `POST /api/audio/reactive-profile` set reactive profile (`profile`: `balanced` or `volume_blackout`)
+- `POST /api/audio/reactive-profile` set reactive profile (`profile`: `balanced`, `party_sweep`, `color_pulse`, or `volume_blackout`)
 - `POST /api/audio/input-device` select active audio input device (`-1` = default)
 - `POST /api/groups` create group
 - `POST /api/groups/{id}/fixtures` set group members

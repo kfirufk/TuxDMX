@@ -301,6 +301,12 @@ function iconBadge(kindOrLabel, byLabel = false) {
 
 const LAYOUT_STORAGE_KEY = 'tuxdmx.layout.v1';
 const MIDI_REACTIVE_CONTROL_ID = 'audio:reactive';
+const REACTIVE_PROFILE_LABELS = {
+  balanced: 'Balanced',
+  party_sweep: 'Party Sweep',
+  color_pulse: 'Color Pulse',
+  volume_blackout: 'Volume Blackout',
+};
 const PERFORMANCE_STORAGE_KEY = 'tuxdmx.performance.v1';
 const THEME_STORAGE_KEY = 'tuxdmx.theme.v1';
 const DMX_DEVICE_AUTO_VALUE = '__auto__';
@@ -1632,7 +1638,8 @@ function renderStatus(dmx, audio, midi = null) {
     els.audioThreshold.textContent = `Reactive Threshold: ${reactiveThreshold.toFixed(2)}`;
   }
   if (els.reactiveProfileSelect && document.activeElement !== els.reactiveProfileSelect) {
-    els.reactiveProfileSelect.value = reactiveProfile === 'volume_blackout' ? 'volume_blackout' : 'balanced';
+    const allowedProfiles = new Set(Object.keys(REACTIVE_PROFILE_LABELS));
+    els.reactiveProfileSelect.value = allowedProfiles.has(reactiveProfile) ? reactiveProfile : 'balanced';
   }
 
   if (els.reactiveLiveEnergy) {
@@ -2928,7 +2935,7 @@ async function toggleReactiveMode() {
 
 async function applyReactiveProfile({ notify = true } = {}) {
   if (!els.reactiveProfileSelect) return;
-  const profile = els.reactiveProfileSelect.value === 'volume_blackout' ? 'volume_blackout' : 'balanced';
+  const profile = REACTIVE_PROFILE_LABELS[els.reactiveProfileSelect.value] ? els.reactiveProfileSelect.value : 'balanced';
 
   try {
     await api('/api/audio/reactive-profile', {
@@ -2939,7 +2946,7 @@ async function applyReactiveProfile({ notify = true } = {}) {
       state.audio.reactiveProfile = profile;
     }
     if (notify) {
-      showToast(`Reactive profile: ${profile === 'volume_blackout' ? 'Volume Blackout' : 'Balanced'}`);
+      showToast(`Reactive profile: ${REACTIVE_PROFILE_LABELS[profile] || 'Balanced'}`);
     }
   } catch (err) {
     showToast(err.message, 'error');

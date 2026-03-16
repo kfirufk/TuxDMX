@@ -128,16 +128,126 @@ std::optional<ChannelRange> pickRangeByKeywords(const std::vector<ChannelRange>&
   return std::nullopt;
 }
 
+enum ReactiveProfileId {
+  kReactiveBalanced = 0,
+  kReactiveVolumeBlackout = 1,
+  kReactivePartySweep = 2,
+  kReactiveColorPulse = 3,
+};
+
+struct ReactiveProfileTuning {
+  int id = kReactiveBalanced;
+  const char* name = "balanced";
+  float energyAttack = 0.18F;
+  float energyRelease = 0.24F;
+  float colorFloor = 0.24F;
+  float motionThreshold = 0.10F;
+  float motionMultiplier = 1.0F;
+  float motionSpread = 1.0F;
+  float hueSpeed = 1.0F;
+  bool hardBlackoutBelowThreshold = false;
+  bool preferAutoPrograms = false;
+  bool colorFocused = false;
+};
+
+struct ReactiveFixtureTraits {
+  bool hasDimmer = false;
+  bool hasRgb = false;
+  bool hasWhite = false;
+  bool hasPan = false;
+  bool hasTilt = false;
+  bool hasMovement = false;
+  bool hasStrobe = false;
+  bool hasMode = false;
+  bool hasStripEffect = false;
+  bool hasEffectMode = false;
+  bool hasMacro = false;
+};
+
+float clamp01(float value) { return std::clamp(value, 0.0F, 1.0F); }
+
+float applyAttackRelease(float current, float target, float attack, float release) {
+  const float alpha = target > current ? attack : release;
+  return current * (1.0F - alpha) + target * alpha;
+}
+
+float normalizedAboveGate(float value, float gate) {
+  if (gate >= 0.99F) {
+    return 0.0F;
+  }
+  return clamp01((value - gate) / std::max(0.01F, 1.0F - gate));
+}
+
 std::string reactiveProfileName(int profile) {
-  return profile == 1 ? "volume_blackout" : "balanced";
+  switch (profile) {
+    case kReactiveVolumeBlackout:
+      return "volume_blackout";
+    case kReactivePartySweep:
+      return "party_sweep";
+    case kReactiveColorPulse:
+      return "color_pulse";
+    default:
+      return "balanced";
+  }
 }
 
 int reactiveProfileFromName(std::string_view raw) {
   const std::string lowered = toLower(raw);
   if (lowered == "volume_blackout" || lowered == "volume-blackout" || lowered == "volume blackout") {
-    return 1;
+    return kReactiveVolumeBlackout;
   }
-  return 0;
+  if (lowered == "party_sweep" || lowered == "party-sweep" || lowered == "party sweep") {
+    return kReactivePartySweep;
+  }
+  if (lowered == "color_pulse" || lowered == "color-pulse" || lowered == "color pulse") {
+    return kReactiveColorPulse;
+  }
+  return kReactiveBalanced;
+}
+
+ReactiveProfileTuning reactiveProfileTuning(int profile) {
+  switch (profile) {
+    case kReactiveVolumeBlackout:
+      return {kReactiveVolumeBlackout, "volume_blackout", 0.34F, 0.58F, 0.0F, 0.26F, 0.72F, 0.78F, 0.66F, true, false,
+              false};
+    case kReactivePartySweep:
+      return {kReactivePartySweep, "party_sweep", 0.24F, 0.18F, 0.30F, 0.04F, 1.55F, 1.34F, 1.32F, false, true, false};
+    case kReactiveColorPulse:
+      return {kReactiveColorPulse, "color_pulse", 0.28F, 0.36F, 0.16F, 0.30F, 0.40F, 0.60F, 1.45F, false, false, true};
+    default:
+      return {kReactiveBalanced, "balanced", 0.20F, 0.24F, 0.24F, 0.10F, 1.0F, 0.96F, 1.0F, false, false, false};
+  }
+}
+
+ReactiveFixtureTraits analyzeReactiveFixtureTraits(const std::vector<TemplateChannel>& channels) {
+  ReactiveFixtureTraits traits;
+  for (const auto& channel : channels) {
+    const std::string kind = toLower(channel.kind);
+    if (kind == "dimmer") {
+      traits.hasDimmer = true;
+    } else if (kind == "red" || kind == "green" || kind == "blue") {
+      traits.hasRgb = true;
+    } else if (kind == "white") {
+      traits.hasWhite = true;
+    } else if (kind == "pan") {
+      traits.hasPan = true;
+      traits.hasMovement = true;
+    } else if (kind == "tilt") {
+      traits.hasTilt = true;
+      traits.hasMovement = true;
+    } else if (kind == "strobe") {
+      traits.hasStrobe = true;
+    } else if (kind == "mode") {
+      traits.hasMode = true;
+    } else if (kind == "strip_effect" || kind == "effect") {
+      traits.hasStripEffect = true;
+    } else if (kind == "effect_mode") {
+      traits.hasEffectMode = true;
+    } else if (kind == "macro") {
+      traits.hasMacro = true;
+    }
+  }
+  return traits;
 }
 
 int rangeLowValue(const ChannelRange& range) {
@@ -1138,8 +1248,8 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
   }
 
   const auto now = std::chrono::steady_clock::now();
-  if (!metrics.beat && lastReactiveApply_.time_since_epoch().count() != 0 &&
-      now - lastReactiveApply_ < std::chrono::milliseconds(45)) {
+  if (!metrics.beat && lastReactiveApply_.time_since_epoch().count() != 0
+      && now - lastReactiveApply_ < std::chrono::milliseconds(45)) {
     return;
   }
   lastReactiveApply_ = now;
@@ -1152,12 +1262,14 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
     return;
   }
 
-  rebuildAllUniversesFromDatabase();
-
   std::uniform_real_distribution<float> hueJitter(-4.0F, 4.0F);
   const float gate = std::clamp(reactiveVolumeThreshold_.load(), 0.0F, 1.0F);
-  const bool volumeBlackoutProfile = reactiveProfile_.load() == 1;
+  const auto profile = reactiveProfileTuning(reactiveProfile_.load());
   const bool simulatedAudioSource = toLower(audio_.backendName()).find("simulated-energy") != std::string::npos;
+  const float rawEnergy = clamp01(metrics.energy);
+  const float rawBass = clamp01(metrics.bass);
+  const float rawTreble = clamp01(metrics.treble);
+  const float bpmFactor = clamp01(metrics.bpm / 180.0F);
 
   for (const auto& resolved : fixtures) {
     const auto& fixture = resolved.fixture;
@@ -1166,62 +1278,73 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
     }
 
     auto& state = reactiveStates_[fixture.id];
+    const auto traits = analyzeReactiveFixtureTraits(resolved.templateChannels);
 
-    const float rawEnergy = std::clamp(metrics.energy, 0.0F, 1.0F);
+    state.smoothedEnergy =
+        applyAttackRelease(state.smoothedEnergy, rawEnergy, profile.energyAttack, profile.energyRelease);
 
-    // Volume blackout needs faster release than balanced mode so fixtures stop quickly after a transient.
-    if (volumeBlackoutProfile) {
-      const float alpha = rawEnergy > state.smoothedEnergy ? 0.32F : 0.55F;
-      state.smoothedEnergy = state.smoothedEnergy * (1.0F - alpha) + rawEnergy * alpha;
-    } else {
-      state.smoothedEnergy = state.smoothedEnergy * 0.82F + rawEnergy * 0.18F;
+    const float activityGate = profile.hardBlackoutBelowThreshold ? gate : std::max(0.0F, gate * 0.78F - 0.02F);
+    float activity = normalizedAboveGate(state.smoothedEnergy, activityGate);
+
+    const float beatGate =
+        profile.hardBlackoutBelowThreshold ? std::max(gate, 0.20F) : std::max(0.05F, gate * 0.72F);
+    bool strongBeat = metrics.beat && (rawEnergy >= beatGate);
+    if (profile.hardBlackoutBelowThreshold && simulatedAudioSource) {
+      // Synthetic fallback audio is useful for UI checks, but it should not wake blackout-style looks.
+      strongBeat = false;
     }
 
-    // In volume blackout we do not allow beat markers below threshold to wake movement.
-    const float beatGate = volumeBlackoutProfile ? std::max(gate, 0.20F) : std::max(0.05F, gate * 0.85F);
-    bool strongBeat = metrics.beat && (rawEnergy >= beatGate);
-    bool nearSilence = volumeBlackoutProfile ? (rawEnergy < gate) : (!strongBeat && rawEnergy < gate);
-    if (volumeBlackoutProfile && simulatedAudioSource) {
-      // In this profile, synthetic fallback audio should never drive fixtures.
+    state.beatPulse = std::max(strongBeat ? 1.0F : 0.0F, state.beatPulse * (profile.colorFocused ? 0.74F : 0.78F));
+
+    bool nearSilence = profile.hardBlackoutBelowThreshold
+                           ? (rawEnergy < gate && activity < 0.04F && state.beatPulse < 0.04F)
+                           : (activity < 0.02F && rawEnergy < std::max(0.02F, gate * 0.75F) && state.beatPulse < 0.05F);
+    if (profile.hardBlackoutBelowThreshold && simulatedAudioSource) {
       nearSilence = true;
     }
     if (nearSilence) {
-      state.smoothedEnergy *= volumeBlackoutProfile ? 0.30F : 0.75F;
+      state.smoothedEnergy *= profile.hardBlackoutBelowThreshold ? 0.32F : 0.78F;
       if (state.smoothedEnergy < 0.005F) {
         state.smoothedEnergy = 0.0F;
       }
+      activity = profile.hardBlackoutBelowThreshold ? 0.0F : activity * 0.35F;
     }
 
-    float activity = gate >= 0.99F
-                         ? 0.0F
-                         : std::clamp((state.smoothedEnergy - gate) / std::max(0.01F, 1.0F - gate), 0.0F, 1.0F);
-    if (volumeBlackoutProfile && activity < 0.08F) {
-      // Prevent tiny background fluctuations from waking movement/effects.
-      nearSilence = true;
-      strongBeat = false;
-      activity = 0.0F;
-      state.smoothedEnergy *= 0.35F;
-      if (state.smoothedEnergy < 0.005F) {
-        state.smoothedEnergy = 0.0F;
+    const float brightnessEnergy = profile.hardBlackoutBelowThreshold
+                                       ? activity
+                                       : clamp01((activity * 0.74F) + (state.smoothedEnergy * 0.36F)
+                                                 + (state.beatPulse * 0.12F));
+    const float bassDrive = normalizedAboveGate(rawBass, std::max(0.04F, gate * 0.45F));
+    const float trebleDrive = clamp01(rawTreble * 0.85F + state.beatPulse * 0.35F);
+
+    float motionTarget = 0.0F;
+    if (traits.hasMovement) {
+      motionTarget = clamp01(((brightnessEnergy * 0.55F) + (bassDrive * 0.55F) + (state.beatPulse * 0.40F))
+                             * profile.motionMultiplier
+                             - profile.motionThreshold);
+      if (profile.colorFocused) {
+        motionTarget *= 0.35F;
+      }
+      if (profile.hardBlackoutBelowThreshold && nearSilence) {
+        motionTarget = 0.0F;
       }
     }
 
-    float motionActivity = volumeBlackoutProfile ? std::clamp((activity - 0.18F) / 0.82F, 0.0F, 1.0F) : activity;
-    if (volumeBlackoutProfile && nearSilence) {
-      motionActivity = 0.0F;
+    state.motionEnergy = applyAttackRelease(state.motionEnergy, motionTarget, strongBeat ? 0.36F : 0.24F,
+                                            profile.hardBlackoutBelowThreshold ? 0.44F : 0.20F);
+    if (nearSilence && state.motionEnergy < 0.03F) {
+      state.motionEnergy = 0.0F;
     }
 
-    // Hue motion follows meaningful audio activity. When quiet, it barely changes.
-    float hueStep = volumeBlackoutProfile && nearSilence ? 0.0F : (0.06F + (activity * 2.4F));
     if (strongBeat) {
-      hueStep += 0.9F;
+      ++state.modeCursor;
     }
-    if (metrics.bpm > 20.0F && activity > 0.05F) {
-      hueStep += metrics.bpm / 140.0F;
+
+    if (!(profile.hardBlackoutBelowThreshold && nearSilence)) {
+      const float hueStep = (0.16F + brightnessEnergy * (1.70F * profile.hueSpeed)) + (bpmFactor * 0.85F)
+                            + (state.beatPulse * 0.95F);
+      state.hue += hueStep + (hueJitter(reactiveRng_) * (0.08F + brightnessEnergy * 0.55F));
     }
-    state.hue += hueStep;
-    const float jitterScale = volumeBlackoutProfile && nearSilence ? 0.0F : (0.12F + (activity * 0.88F));
-    state.hue += hueJitter(reactiveRng_) * jitterScale;
     if (state.hue < 0.0F) {
       state.hue += 360.0F;
     }
@@ -1229,217 +1352,209 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
       state.hue -= 360.0F;
     }
 
-    const float colorFloor = volumeBlackoutProfile ? 0.0F : 0.26F;
-    const float colorValue = volumeBlackoutProfile
-                                 ? (nearSilence ? 0.0F : std::clamp(activity * 1.05F, 0.0F, 1.0F))
-                                 : std::clamp(colorFloor + state.smoothedEnergy * 0.74F, 0.0F, 1.0F);
-    const auto rgb = hsvToRgb(state.hue + (strongBeat ? 12.0F : 0.0F), 0.9F, colorValue);
+    state.motionPhase += 0.02F + (state.motionEnergy * (0.18F + profile.motionSpread * 0.07F)) + (bpmFactor * 0.05F);
+    if (state.motionPhase >= 6.2831853F) {
+      state.motionPhase = std::fmod(state.motionPhase, 6.2831853F);
+    }
+
+    const float colorValue = profile.hardBlackoutBelowThreshold
+                                 ? (nearSilence ? 0.0F : clamp01(brightnessEnergy * 1.08F + state.beatPulse * 0.16F))
+                                 : clamp01(profile.colorFloor + brightnessEnergy * 0.70F + state.beatPulse * 0.14F);
+    const float saturation = profile.colorFocused ? 0.96F : 0.90F;
+    const auto rgb = hsvToRgb(state.hue + (state.beatPulse * 14.0F), saturation, colorValue);
 
     std::vector<ChannelPatch> patches;
+    const float phase = state.motionPhase + static_cast<float>((fixture.id % 11) * 0.37F);
 
     for (const auto& channel : resolved.templateChannels) {
       if (channel.channelIndex < 1 || channel.channelIndex > fixture.channelCount) {
         continue;
       }
 
-      const auto kind = toLower(channel.kind);
+      const std::string kind = toLower(channel.kind);
       int nextValue = -1;
 
-      const float phase = state.hue * 0.0174532925F;
-
       if (kind == "dimmer") {
-        // Master dimmer combines overall loudness and bass accents.
-        if (volumeBlackoutProfile) {
-          if (nearSilence || activity < 0.02F) {
-            nextValue = 0;
-          } else {
-            const float dimmer = (activity * 215.0F) + (strongBeat ? 20.0F : 0.0F);
-            nextValue = clampDmx(static_cast<int>(std::round(dimmer)));
-          }
+        if (profile.hardBlackoutBelowThreshold && nearSilence) {
+          nextValue = 0;
         } else {
-          const float dimmer = 30.0F + (state.smoothedEnergy * 170.0F) + (metrics.bass * 46.0F) + (strongBeat ? 18.0F : 0.0F);
-          nextValue = clampDmx(static_cast<int>(std::round(dimmer)));
+          const float dimmerBase = profile.hardBlackoutBelowThreshold ? 0.0F : (traits.hasRgb || traits.hasWhite ? 0.14F : 0.20F);
+          const float dimmerNorm = profile.colorFocused
+                                       ? (brightnessEnergy * 0.78F) + (state.beatPulse * 0.18F)
+                                       : (brightnessEnergy * 0.72F) + (bassDrive * 0.20F) + (state.beatPulse * 0.12F);
+          nextValue = clampDmx(static_cast<int>(std::round(clamp01(dimmerBase + dimmerNorm) * 255.0F)));
         }
       } else if (kind == "pan") {
-        // Pan stays parked at center when audio activity is very low.
-        if (motionActivity < 0.03F || (volumeBlackoutProfile && nearSilence)) {
+        if (state.motionEnergy < 0.04F || (profile.hardBlackoutBelowThreshold && nearSilence)) {
           nextValue = 128;
         } else {
-          const float amplitude = 16.0F + (motionActivity * 106.0F);
-          const float pan = 128.0F + std::sin(phase * 1.13F) * amplitude;
+          float amplitude = (18.0F + (state.motionEnergy * 92.0F)) * profile.motionSpread;
+          if (profile.colorFocused) {
+            amplitude *= 0.60F;
+          }
+          const float pan = 128.0F + std::sin(phase) * amplitude;
           nextValue = clampDmx(static_cast<int>(std::round(pan)));
         }
       } else if (kind == "tilt") {
-        // Tilt follows pan behavior and remains still in near-silence.
-        if (motionActivity < 0.03F || (volumeBlackoutProfile && nearSilence)) {
+        if (state.motionEnergy < 0.04F || (profile.hardBlackoutBelowThreshold && nearSilence)) {
           nextValue = 128;
         } else {
-          const float amplitude = 9.0F + (motionActivity * 66.0F);
-          const float tilt = 128.0F + std::cos((phase * 0.93F) + 0.8F) * amplitude;
+          float amplitude = (10.0F + (state.motionEnergy * 62.0F)) * profile.motionSpread;
+          if (profile.colorFocused) {
+            amplitude *= 0.58F;
+          }
+          const float tilt = 128.0F + std::cos((phase * 0.81F) + 0.9F) * amplitude;
           nextValue = clampDmx(static_cast<int>(std::round(tilt)));
         }
       } else if (kind == "pan_speed") {
-        // This channel is documented as 0=fast, 255=slow, so we invert energy.
-        // High music energy => lower DMX value => faster movement.
-        float speedValue = 255.0F;
-        if (volumeBlackoutProfile && nearSilence) {
-          // In blackout profile, settle to center quickly when audio drops.
+        float speedValue = profile.colorFocused ? 230.0F : 255.0F;
+        if (profile.hardBlackoutBelowThreshold && nearSilence) {
           speedValue = 0.0F;
-        } else if (!(nearSilence || (volumeBlackoutProfile && motionActivity < 0.03F))) {
-          speedValue = 240.0F - (motionActivity * 200.0F) - (strongBeat ? 16.0F : 0.0F);
+        } else if (state.motionEnergy >= 0.03F) {
+          speedValue = 235.0F - (state.motionEnergy * 190.0F) - (state.beatPulse * 18.0F);
         }
-        if (volumeBlackoutProfile && nearSilence) {
-          speedValue = std::clamp(speedValue, 0.0F, 255.0F);
-        } else {
-          speedValue = std::clamp(speedValue, 15.0F, 255.0F);
-        }
-        nextValue = static_cast<int>(std::round(speedValue));
+        nextValue = static_cast<int>(
+            std::round(std::clamp(speedValue, profile.hardBlackoutBelowThreshold ? 0.0F : 15.0F, 255.0F)));
       } else if (kind == "red") {
-        nextValue = volumeBlackoutProfile && nearSilence ? 0 : rgb[0];
+        nextValue = profile.hardBlackoutBelowThreshold && nearSilence ? 0 : rgb[0];
       } else if (kind == "green") {
-        nextValue = volumeBlackoutProfile && nearSilence ? 0 : rgb[1];
+        nextValue = profile.hardBlackoutBelowThreshold && nearSilence ? 0 : rgb[1];
       } else if (kind == "blue") {
-        nextValue = volumeBlackoutProfile && nearSilence ? 0 : rgb[2];
+        nextValue = profile.hardBlackoutBelowThreshold && nearSilence ? 0 : rgb[2];
       } else if (kind == "white") {
-        // White is used as a sparkle accent on transients/treble.
-        if (volumeBlackoutProfile) {
-          if (nearSilence || activity < 0.05F) {
-            nextValue = 0;
-          } else {
-            const float white = (activity * 120.0F) + (strongBeat ? 70.0F : 0.0F);
-            nextValue = clampDmx(static_cast<int>(std::round(white)));
-          }
-        } else {
-          const float white = 8.0F + (metrics.treble * 130.0F) + (strongBeat ? 70.0F : 0.0F);
-          nextValue = clampDmx(static_cast<int>(std::round(white)));
-        }
-      } else if (kind == "speed") {
-        // Effect speed scales with measured BPM and overall energy.
-        if (volumeBlackoutProfile && nearSilence) {
+        if (profile.hardBlackoutBelowThreshold && nearSilence) {
           nextValue = 0;
         } else {
-          const float speed = 14.0F + (metrics.bpm * 0.55F) + (state.smoothedEnergy * 86.0F);
-          nextValue = clampDmx(static_cast<int>(std::round(speed)));
+          const float whiteNorm = clamp01((traits.hasRgb ? 0.0F : brightnessEnergy * 0.45F) + (trebleDrive * 0.52F)
+                                          + (state.beatPulse * 0.25F));
+          const float whiteScale = profile.colorFocused ? 200.0F : 255.0F;
+          nextValue = clampDmx(static_cast<int>(std::round(whiteNorm * whiteScale)));
+        }
+      } else if (kind == "speed") {
+        if (profile.hardBlackoutBelowThreshold && nearSilence) {
+          nextValue = 0;
+        } else {
+          const float speedNorm =
+              clamp01(0.20F + (brightnessEnergy * 0.55F) + (bpmFactor * 0.25F) + (state.beatPulse * 0.15F));
+          nextValue = clampDmx(static_cast<int>(std::round(speedNorm * 255.0F)));
         }
       } else if (kind == "strobe") {
         std::optional<ChannelRange> targetRange;
-        if (!nearSilence && (strongBeat || metrics.energy > std::max(0.72F, gate + 0.40F))) {
+        const bool strobeHit = !nearSilence
+                               && ((profile.id == kReactivePartySweep && (state.beatPulse > 0.45F || brightnessEnergy > 0.70F))
+                                   || (profile.id == kReactiveColorPulse && state.beatPulse > 0.72F)
+                                   || (strongBeat && rawTreble > std::max(0.58F, gate + 0.18F)));
+        if (strobeHit) {
           targetRange = pickRangeByKeywords(channel.ranges, {"strobe", "flash", "flicker"});
         } else {
           targetRange = pickRangeByKeywords(channel.ranges, {"no", "off", "manual", "static"});
         }
 
         if (targetRange.has_value()) {
-          nextValue = nearSilence ? rangeLowValue(*targetRange) : rangeMidValue(*targetRange);
+          nextValue = strobeHit ? rangeMidValue(*targetRange) : rangeLowValue(*targetRange);
         } else {
-          nextValue = strongBeat ? 160 : 0;
+          nextValue = strobeHit ? (profile.id == kReactivePartySweep ? 185 : 140) : 0;
         }
       } else if (kind == "mode" || kind == "strip_effect" || kind == "effect") {
         if (nearSilence) {
           nextValue = neutralRangeValue(channel.ranges);
-          continue;
-        }
-
-        std::vector<std::string> desired;
-
-        if (kind == "strip_effect" || kind == "effect") {
-          if (state.smoothedEnergy < 0.22F) {
-            desired = {"nf", "off", "none"};
-          } else if (metrics.beat || state.smoothedEnergy > 0.62F) {
-            desired = {"self-drive", "self drive", "auto", "effect"};
-          } else {
-            desired = {"fixed", "color"};
-          }
         } else {
-          // Mode selection priorities use the labels you define in each range.
-          // Tweak keyword sets below to map your own fixture vocabulary.
-          if (metrics.bass > std::max(0.75F, gate + 0.35F)) {
+          std::vector<std::string> desired;
+
+          if (kind == "strip_effect" || kind == "effect") {
+            if (profile.colorFocused) {
+              desired = {"fixed", "color", "manual", "static"};
+            } else if (profile.preferAutoPrograms && (state.motionEnergy > 0.24F || state.beatPulse > 0.35F)) {
+              desired = {"self-drive", "self drive", "auto", "effect"};
+            } else if (brightnessEnergy > 0.45F) {
+              desired = {"fixed", "color", "gradient", "fade"};
+            } else {
+              desired = {"fixed", "color", "manual", "static"};
+            }
+          } else if (profile.preferAutoPrograms && (state.motionEnergy > 0.22F || state.beatPulse > 0.30F)) {
+            if (strongBeat) {
+              desired = {"jump", "flash"};
+            } else if (bassDrive > 0.56F) {
+              desired = {"voice", "sound", "music"};
+            } else {
+              desired = {"gradient", "fade", "pulse", "variable"};
+            }
+          } else if (profile.colorFocused) {
+            if (state.beatPulse > 0.55F) {
+              desired = {"variable", "pulse"};
+            } else if (brightnessEnergy > 0.32F) {
+              desired = {"gradient", "fade"};
+            } else {
+              desired = {"manual", "static"};
+            }
+          } else if (bassDrive > 0.62F) {
             desired = {"voice", "sound", "music"};
-          } else if (strongBeat && metrics.energy > std::max(0.65F, gate + 0.28F)) {
+          } else if (strongBeat) {
             desired = {"jump", "flash"};
-          } else if (metrics.energy > std::max(0.50F, gate + 0.20F)) {
-            desired = {"pulse", "variable"};
-          } else if (metrics.energy > std::max(0.30F, gate + 0.10F)) {
+          } else if (brightnessEnergy > 0.48F) {
+            desired = {"variable", "pulse"};
+          } else if (brightnessEnergy > 0.26F) {
             desired = {"gradient", "fade"};
           } else {
             desired = {"manual", "static"};
           }
-        }
 
-        auto range = pickRangeByKeywords(channel.ranges, desired);
-
-        if (!range.has_value() && !channel.ranges.empty()) {
-          if (strongBeat) {
-            state.modeCursor = (state.modeCursor + 1) % channel.ranges.size();
+          auto range = pickRangeByKeywords(channel.ranges, desired);
+          if (!range.has_value() && !channel.ranges.empty()) {
+            range = channel.ranges[state.modeCursor % channel.ranges.size()];
           }
-          range = channel.ranges[state.modeCursor % channel.ranges.size()];
-        }
 
-        if (range.has_value()) {
-          nextValue = rangeMidValue(*range);
-        } else {
-          nextValue = 0;
+          nextValue = range.has_value() ? rangeMidValue(*range) : 0;
         }
       } else if (kind == "effect_mode") {
         if (nearSilence) {
           nextValue = neutralRangeValue(channel.ranges);
-          continue;
-        }
-
-        std::vector<std::string> desired;
-
-        if (metrics.treble > std::max(0.68F, gate + 0.28F)) {
-          desired = {"chromatic", "aberration", "prism"};
-        } else if (state.smoothedEnergy > std::max(0.44F, gate + 0.16F)) {
-          desired = {"gradient", "fade", "tint"};
-        } else if (state.smoothedEnergy > std::max(0.20F, gate + 0.06F)) {
-          desired = {"shift", "color"};
         } else {
-          desired = {"nf", "off", "none"};
-        }
+          std::vector<std::string> desired;
 
-        auto range = pickRangeByKeywords(channel.ranges, desired);
-        if (!range.has_value() && !channel.ranges.empty()) {
-          range = channel.ranges[static_cast<std::size_t>(state.modeCursor % channel.ranges.size())];
-        }
+          if (profile.colorFocused && brightnessEnergy > 0.18F) {
+            desired = {"shift", "color", "gradient", "tint"};
+          } else if (trebleDrive > 0.62F || (profile.preferAutoPrograms && state.beatPulse > 0.40F)) {
+            desired = {"chromatic", "aberration", "prism"};
+          } else if (brightnessEnergy > 0.38F) {
+            desired = {"gradient", "fade", "tint"};
+          } else {
+            desired = {"shift", "color", "nf", "off", "none"};
+          }
 
-        if (range.has_value()) {
-          nextValue = rangeMidValue(*range);
-        } else {
-          nextValue = 0;
+          auto range = pickRangeByKeywords(channel.ranges, desired);
+          if (!range.has_value() && !channel.ranges.empty()) {
+            range = channel.ranges[state.modeCursor % channel.ranges.size()];
+          }
+
+          nextValue = range.has_value() ? rangeMidValue(*range) : 0;
         }
       } else if (kind == "macro") {
         if (nearSilence) {
           nextValue = neutralRangeValue(channel.ranges);
-          continue;
-        }
-
-        std::vector<std::string> desired;
-
-        // Macro logic intentionally avoids reset ranges during autoplay.
-        if (strongBeat && metrics.bass > std::max(0.72F, gate + 0.32F)) {
-          desired = {"voice", "sound", "audio"};
-        } else if (state.smoothedEnergy > std::max(0.38F, gate + 0.14F)) {
-          desired = {"random", "walk"};
         } else {
-          desired = {"nf", "off", "none", "manual"};
-        }
+          std::vector<std::string> desired;
 
-        auto range = pickRangeByKeywords(channel.ranges, desired);
+          // Macro logic intentionally avoids reset ranges during autoplay.
+          if (profile.preferAutoPrograms && (state.motionEnergy > 0.40F || bassDrive > 0.55F)) {
+            desired = {"voice", "sound", "audio"};
+          } else if (brightnessEnergy > 0.40F || state.beatPulse > 0.35F) {
+            desired = {"random", "walk"};
+          } else {
+            desired = {"nf", "off", "none", "manual"};
+          }
 
-        if (!range.has_value() && !channel.ranges.empty()) {
-          for (const auto& candidate : channel.ranges) {
-            if (!containsKeyword(candidate.label, "reset")) {
-              range = candidate;
-              break;
+          auto range = pickRangeByKeywords(channel.ranges, desired);
+          if (!range.has_value() && !channel.ranges.empty()) {
+            for (const auto& candidate : channel.ranges) {
+              if (!containsKeyword(candidate.label, "reset")) {
+                range = candidate;
+                break;
+              }
             }
           }
-        }
 
-        if (range.has_value()) {
-          nextValue = rangeMidValue(*range);
-        } else {
-          nextValue = 0;
+          nextValue = range.has_value() ? rangeMidValue(*range) : 0;
         }
       }
 
@@ -1447,8 +1562,27 @@ void AppController::onAudioMetrics(const AudioMetrics& metrics) {
         continue;
       }
 
+      nextValue = clampDmx(nextValue);
+      const auto currentIt = fixture.channelValues.find(channel.channelIndex);
+      const int currentValue =
+          currentIt == fixture.channelValues.end() ? clampDmx(channel.defaultValue) : clampDmx(currentIt->second);
+      if (nextValue == currentValue) {
+        continue;
+      }
+
+      std::string patchError;
+      if (!db_.storeFixtureChannelValue(fixture.id, channel.channelIndex, nextValue, patchError)) {
+        logMessage(LogLevel::Warn, "audio",
+                   "Reactive channel update failed for fixture " + std::to_string(fixture.id) + " ch"
+                       + std::to_string(channel.channelIndex) + ": " + patchError);
+        continue;
+      }
+
       ChannelPatch patch;
-      if (!db_.updateFixtureChannelValue(fixture.id, channel.channelIndex, nextValue, patch, error)) {
+      patch.universe = fixture.universe;
+      patch.absoluteAddress = fixture.startAddress + channel.channelIndex - 1;
+      patch.value = nextValue;
+      if (patch.absoluteAddress < 1 || patch.absoluteAddress > 512) {
         continue;
       }
       patches.push_back(patch);

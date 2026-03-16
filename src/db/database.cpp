@@ -910,6 +910,31 @@ std::vector<FixtureInstance> Database::listFixtures(std::string& error) {
   return fixtures;
 }
 
+bool Database::storeFixtureChannelValue(int fixtureId, int channelIndex, int value, std::string& error) {
+  std::scoped_lock lock(mutex_);
+  Statement updateStmt;
+  if (!prepare(db_, "UPDATE fixture_channel_values SET value = ? WHERE fixture_id = ? AND channel_index = ?;", updateStmt,
+               error)) {
+    return false;
+  }
+
+  sqlite3_bind_int(updateStmt.stmt, 1, clampDmx(value));
+  sqlite3_bind_int(updateStmt.stmt, 2, fixtureId);
+  sqlite3_bind_int(updateStmt.stmt, 3, channelIndex);
+
+  if (sqlite3_step(updateStmt.stmt) != SQLITE_DONE) {
+    error = sqlite3_errmsg(db_);
+    return false;
+  }
+
+  if (sqlite3_changes(db_) == 0) {
+    error = "Channel value row not found";
+    return false;
+  }
+
+  return true;
+}
+
 bool Database::updateFixtureChannelValue(int fixtureId, int channelIndex, int value, ChannelPatch& patch, std::string& error) {
   std::scoped_lock lock(mutex_);
 
